@@ -16,6 +16,7 @@
  *)
 
 type 'a t = 'a node Location.loc
+
 and 'a node =
   | Code of 'a
   | Seq of 'a t list
@@ -25,7 +26,8 @@ and 'a node =
   | Nongreedy of 'a t
   | Capture of 'a t
   | Capture_as of string Location.loc * 'a t
+  | Named_as of string Location.loc * 'a t
   | Call of Longident.t Location.loc
-  (* TODO: | Case_sense of t | Case_blind of t *)
+(* TODO: | Case_sense of t | Case_blind of t *)
 
-val parse_exn : ?pos: Lexing.position -> string -> string t
+val parse_exn : ?pos:Lexing.position -> string -> string t

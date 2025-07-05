@@ -32,33 +32,17 @@ module List = struct
 end
 
 module Ctx = struct
-  type t = (string, string) Hashtbl.t
+  (* name -> (value, is_used) *)
+  type t = (string, string * bool) Hashtbl.t
 
-  let empty = Hashtbl.create 16
-
+  let empty () = Hashtbl.create 16
   let find name ctx = Hashtbl.find_opt ctx name
 
-  let extract = function
-    | [] -> empty
-    | items ->
-      let ctx = Hashtbl.create 16 in
-      let rec aux = function
-        | [] -> ()
-        | { pstr_desc = Pstr_value (_, vbs); _ } :: rest ->
-          List.iter
-            begin
-              fun vb ->
-                match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
-                | Ppat_var { txt = name; _ }, Pexp_constant (Pconst_string (value, _, _)) ->
-                  Hashtbl.replace ctx name value
-                | _ -> ()
-            end
-            vbs;
-          aux rest
-        | _ :: rest -> aux rest
-      in
-      aux items;
-      ctx
+  let update_used name ctx =
+    let old_value, _ = Hashtbl.find ctx name in
+    Hashtbl.replace ctx name (old_value, true)
+
+  let is_used name ctx = Hashtbl.find_opt ctx name |> Option.value ~default:("", false) |> snd
 end
 
 module Regexp = struct
@@ -104,8 +88,14 @@ module Regexp = struct
       | Capture_as (_, e) -> "(" ^ recurse p_alt e ^ ")"
       | Named_as (idr, _) ->
         let var_name = idr.txt in
-        let content = match Ctx.find var_name ctx with Some value -> parse_exn value | None -> failwith "error" in
-        Printf.sprintf "(%s)" (recurse p_alt content)
+        let content =
+          match Ctx.find var_name ctx with
+          | Some (value, _) -> parse_exn value
+          | None ->
+            error ~loc "Variable '%s' not found. %%pcre only supports global let bindings for substitution." var_name
+        in
+        Ctx.update_used var_name ctx;
+        "(" ^ recurse p_alt content ^ ")"
       | Call _ -> error ~loc "(&...) is not implemented for %%pcre."
     in
     function { Location.txt = Capture_as (_, e); _ } -> recurse 0 e | e -> recurse 0 e
@@ -132,7 +122,6 @@ let extract_bindings ~ctx ~pos s =
   let r = Regexp.parse_exn ~pos s in
   let nG, bs = Regexp.bindings r in
   let re_str = Regexp.to_string ~ctx r in
-  Format.printf "%s@." re_str;
   let loc = Location.none in
   estring ~loc re_str, bs, nG
 
@@ -214,28 +203,79 @@ let transformation ctx =
   object
     inherit [value_binding list] Ast_traverse.fold_map as super
 
+    method! structure_item item acc =
+      begin
+        match item.pstr_desc with
+        | Pstr_value (_, vbs) ->
+          List.iter
+            begin
+              fun vb ->
+                match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+                | Ppat_var { txt = name; _ }, Pexp_constant (Pconst_string (value, _, _)) ->
+                  Hashtbl.replace ctx name (value, false)
+                | _ -> ()
+            end
+            vbs
+        | _ -> ()
+      end;
+      super#structure_item item acc
+
     method! expression e_ext acc =
       let e_ext, acc = super#expression e_ext acc in
       match e_ext.pexp_desc with
       | Pexp_extension ({ txt = "pcre"; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
         let loc = e.pexp_loc in
-        (match e.pexp_desc with
-        | Pexp_match (e, cases) ->
-          let cases, binding = transform_cases ~loc ~ctx cases in
-          ( [%expr
-              let _ppx_regexp_v = [%e e] in
-              [%e cases]],
-            binding :: acc )
-        | Pexp_function (_, _, Pfunction_cases (cases, _, _)) ->
-          let cases, binding = transform_cases ~ctx ~loc cases in
-          [%expr fun _ppx_regexp_v -> [%e cases]], binding :: acc
-        | _ -> error ~loc "[%%pcre] only applies to match an function.")
+        begin
+          match e.pexp_desc with
+          | Pexp_match (e, cases) ->
+            let cases, binding = transform_cases ~loc ~ctx cases in
+            ( [%expr
+                let _ppx_regexp_v = [%e e] in
+                [%e cases]],
+              binding :: acc )
+          | Pexp_function (_, _, Pfunction_cases (cases, _, _)) ->
+            let cases, binding = transform_cases ~ctx ~loc cases in
+            [%expr fun _ppx_regexp_v -> [%e cases]], binding :: acc
+          | _ -> error ~loc "[%%pcre] only applies to match and function."
+        end
       | _ -> e_ext, acc
   end
 
+let suppress_unused_inlined ctx =
+  object
+    inherit Ast_traverse.map as super
+
+    method! structure_item item =
+      match item.pstr_desc with
+      | Pstr_value (rec_flag, bindings) ->
+        let bindings =
+          List.map
+            begin
+              fun binding ->
+                match binding.pvb_pat.ppat_desc, binding.pvb_expr.pexp_desc with
+                | Ppat_var { txt = var_name; _ }, Pexp_constant (Pconst_string (_, _, _)) ->
+                  let needs_suppression = Ctx.is_used var_name ctx in
+                  if needs_suppression then begin
+                    let loc = binding.pvb_loc in
+                    let warning_attr =
+                      attribute ~loc ~name:{ txt = "ocaml.warning"; loc }
+                        ~payload:(PStr [ { pstr_desc = Pstr_eval (estring ~loc "-32", []); pstr_loc = loc } ])
+                    in
+                    { binding with pvb_attributes = warning_attr :: binding.pvb_attributes }
+                  end
+                  else binding
+                | _ -> binding
+            end
+            bindings
+        in
+        { item with pstr_desc = Pstr_value (rec_flag, bindings) }
+      | _ -> super#structure_item item
+  end
+
 let impl str =
-  let ctx = Ctx.extract str in
+  let ctx = Ctx.empty () in
   let str, rev_bindings = (transformation ctx)#structure str [] in
+  let str = (suppress_unused_inlined ctx)#structure str in
   if rev_bindings = [] then str
   else (
     let re_str =

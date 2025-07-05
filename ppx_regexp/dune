@@ -7,5 +7,5 @@
   (libraries ppxlib re re.perl)
   (ppx_runtime_libraries re re.perl))
 
-; (rule (copy ../common/regexp.mli regexp.mli))
-; (rule (copy ../common/regexp.ml regexp.ml))
+(rule (copy ../common/regexp.mli regexp.mli))
+(rule (copy ../common/regexp.ml regexp.ml))
