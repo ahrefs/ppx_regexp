@@ -32,27 +32,33 @@ module List = struct
 end
 
 module Ctx = struct
-  type t = (string * string) list
+  type t = (string, string) Hashtbl.t
 
-  let empty = []
+  let empty = Hashtbl.create 16
 
-  let add name value ctx = (name, value) :: ctx
+  let find name ctx = Hashtbl.find_opt ctx name
 
-  let find name ctx = List.assoc_opt name ctx
-
-  let rec extract = function
-    | [] -> []
-    | { pstr_desc = Pstr_value (_, vbs); _ } :: rest ->
-      let bindings =
-        List.filter_map
-          (fun vb ->
-            match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
-            | Ppat_var { txt = name; _ }, Pexp_constant (Pconst_string (value, _, _)) -> Some (name, value)
-            | _ -> None)
-          vbs
+  let extract = function
+    | [] -> empty
+    | items ->
+      let ctx = Hashtbl.create 16 in
+      let rec aux = function
+        | [] -> ()
+        | { pstr_desc = Pstr_value (_, vbs); _ } :: rest ->
+          List.iter
+            begin
+              fun vb ->
+                match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+                | Ppat_var { txt = name; _ }, Pexp_constant (Pconst_string (value, _, _)) ->
+                  Hashtbl.replace ctx name value
+                | _ -> ()
+            end
+            vbs;
+          aux rest
+        | _ :: rest -> aux rest
       in
-      bindings @ extract rest
-    | _ :: rest -> extract rest
+      aux items;
+      ctx
 end
 
 module Regexp = struct
