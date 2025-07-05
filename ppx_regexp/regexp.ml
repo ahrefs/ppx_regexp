@@ -272,6 +272,11 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
               if get j <> '>' then fail (i, i + 1) "Unbalanced '<'." else
               let k, e = with_loc scan_alt (j + 1) in
               (k, Capture_as (idr, e))
+           | 'N' ->
+              let j, idr = scan_ident (i + 3) in
+              if get j <> '>' then fail (i, i + 1) "Unbalanced '<'." else
+              let k, e = with_loc scan_alt (j + 1) in
+              (k, Named_as (idr, e))
            | ':' ->
               scan_alt (i + 2)
            | '#' ->
