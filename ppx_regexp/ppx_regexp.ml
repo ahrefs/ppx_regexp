@@ -237,7 +237,7 @@ let transformation ctx =
                 let _ppx_regexp_v = [%e e] in
                 [%e cases]],
               binding :: acc )
-          | Pexp_function (_, _, Pfunction_cases (cases, _, _)) ->
+          | Pexp_function cases ->
             let cases, binding = transform_cases ~ctx ~loc cases in
             [%expr fun _ppx_regexp_v -> [%e cases]], binding :: acc
           | _ -> error ~loc "[%%pcre] only applies to match and function."
