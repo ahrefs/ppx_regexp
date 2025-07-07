@@ -61,9 +61,9 @@ module Regexp = struct
       | Nongreedy e -> recurse must_match e
       | Capture _ -> error ~loc "Unnamed capture is not allowed for %%pcre."
       | Capture_as (idr, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
-      | Named_subs (idr, None, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
-      | Named_subs (_, Some idr, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
-      | Unnamed_subs (_, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, bs)
+      | Named_subs (idr, None, e) | Named_subs (_, Some idr, e) ->
+        fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
+      | Unnamed_subs (_, e) -> recurse must_match e
       | Call _ -> error ~loc "(&...) is not implemented for %%pcre."
     in
     function
@@ -75,6 +75,17 @@ module Regexp = struct
     let delimit_if b s = if b then "(?:" ^ s ^ ")" else s in
     let rec recurse p (e' : _ Location.loc) =
       let loc = e'.Location.loc in
+      let parse_inside idr =
+        let var_name = idr.txt in
+        let content =
+          match Ctx.find var_name ctx with
+          | Some (value, _) -> parse_exn value
+          | None ->
+            error ~loc "Variable '%s' not found. %%pcre only supports global let bindings for substitution." var_name
+        in
+        Ctx.update_used var_name ctx;
+        content
+      in
       match e'.Location.txt with
       | Code s ->
         (* Delimiters not needed as Regexp.parse_exn only returns single
@@ -89,16 +100,12 @@ module Regexp = struct
       | Nongreedy e -> recurse p_suffix e ^ "?"
       | Capture _ -> error ~loc "Unnamed capture is not allowed for %%pcre."
       | Capture_as (_, e) -> "(" ^ recurse p_alt e ^ ")"
-      | Named_subs (idr, _, _) | Unnamed_subs (idr, _) ->
-        let var_name = idr.txt in
-        let content =
-          match Ctx.find var_name ctx with
-          | Some (value, _) -> parse_exn value
-          | None ->
-            error ~loc "Variable '%s' not found. %%pcre only supports global let bindings for substitution." var_name
-        in
-        Ctx.update_used var_name ctx;
+      | Named_subs (idr, _, _) ->
+        let content = parse_inside idr in
         "(" ^ recurse p_alt content ^ ")"
+      | Unnamed_subs (idr, _) ->
+        let content = parse_inside idr in
+        recurse p_alt content
       | Call _ -> error ~loc "(&...) is not implemented for %%pcre."
     in
     function { Location.txt = Capture_as (_, e); _ } -> recurse 0 e | e -> recurse 0 e
@@ -124,7 +131,6 @@ let rec must_match p i =
 let extract_bindings ~ctx ~pos s =
   let r = Regexp.parse_exn ~pos s in
   let nG, bs = Regexp.bindings r in
-  List.iter (fun (idr, i, b) -> Format.printf "%s, %i, %b@." idr.txt (match i with Some i -> i | None -> -1) b) bs;
   let re_str = Regexp.to_string ~ctx r in
   let loc = Location.none in
   estring ~loc re_str, bs, nG
@@ -142,7 +148,7 @@ let rec wrap_group_bindings ~loc rhs offG = function
       let [%p ppat_var ~loc varG] = [%e eG] in
       [%e wrap_group_bindings ~loc rhs offG bs]]
 
-let transform_cases ~loc ~ctx cases =
+let transform_cases ~opts ~loc ~ctx cases =
   let aux case =
     if case.pc_guard <> None then error ~loc "Guards are not implemented for match%%pcre."
     else
@@ -177,9 +183,17 @@ let transform_cases ~loc ~ctx cases =
   in
   let cases = List.rev_map aux cases in
   let res = pexp_array ~loc (List.map (fun (re, _, _, _) -> re) cases) in
+  let opts_expr =
+    let rec opts_to_expr = function
+      | [] -> [%expr []]
+      | `Caseless :: rest -> [%expr `Caseless :: [%e opts_to_expr rest]]
+      | _ -> assert false
+    in
+    opts_to_expr opts
+  in
   let comp =
     [%expr
-      let a = Array.map (fun s -> Re.mark (Re.Perl.re s)) [%e res] in
+      let a = Array.map (fun s -> Re.mark (Re.Perl.re ~opts:[%e opts_expr] s)) [%e res] in
       let marks = Array.map fst a in
       let re = Re.compile (Re.alt (Array.to_list (Array.map snd a))) in
       re, marks]
@@ -226,22 +240,26 @@ let transformation ctx =
 
     method! expression e_ext acc =
       let e_ext, acc = super#expression e_ext acc in
+      let make_transformations ~opts ~loc = function
+        | Pexp_match (e, cases) ->
+          let cases, binding = transform_cases ~opts ~loc ~ctx cases in
+          ( [%expr
+              let _ppx_regexp_v = [%e e] in
+              [%e cases]],
+            binding :: acc )
+        | Pexp_function cases ->
+          (* | Pexp_function (_, _, Pfunction_cases (cases, _, _)) -> *)
+          let cases, binding = transform_cases ~opts ~loc ~ctx cases in
+          [%expr fun _ppx_regexp_v -> [%e cases]], binding :: acc
+        | _ -> error ~loc "[%%pcre] only applies to match and function."
+      in
       match e_ext.pexp_desc with
       | Pexp_extension ({ txt = "pcre"; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
         let loc = e.pexp_loc in
-        begin
-          match e.pexp_desc with
-          | Pexp_match (e, cases) ->
-            let cases, binding = transform_cases ~loc ~ctx cases in
-            ( [%expr
-                let _ppx_regexp_v = [%e e] in
-                [%e cases]],
-              binding :: acc )
-          | Pexp_function cases ->
-            let cases, binding = transform_cases ~ctx ~loc cases in
-            [%expr fun _ppx_regexp_v -> [%e cases]], binding :: acc
-          | _ -> error ~loc "[%%pcre] only applies to match and function."
-        end
+        make_transformations ~opts:[] ~loc e.pexp_desc
+      | Pexp_extension ({ txt = "pcre_i"; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
+        let loc = e.pexp_loc in
+        make_transformations ~opts:[ `Caseless ] ~loc e.pexp_desc
       | _ -> e_ext, acc
   end
 
