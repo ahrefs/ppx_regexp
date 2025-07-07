@@ -29,7 +29,8 @@ and 'a node =
   | Nongreedy of 'a t
   | Capture of 'a t
   | Capture_as of string Location.loc * 'a t
-  | Named_as of string Location.loc * 'a t
+  | Named_subs of string Location.loc * string Location.loc option * 'a t
+  | Unnamed_subs of string Location.loc * 'a t
   | Call of Longident.t Location.loc
 (* TODO: | Case_sense of t | Case_blind of t *)
 
@@ -244,10 +245,31 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
             k, Capture_as (idr, e))
         | 'N' ->
           let j, idr = scan_ident (i + 3) in
+          begin
+            match get j with
+            | '>' ->
+              let k, e = with_loc scan_alt (j + 1) in
+              k, Named_subs (idr, None, e)
+            | ' ' ->
+              let j, jdr = scan_ident (j + 1) in
+              if jdr.txt = "as" && get j = ' ' then begin
+                let j, kdr = scan_ident (j + 1) in
+                if get j <> '>' then fail (j, j + 1) "Unbalanced '<'."
+                else begin
+                  let k, e = with_loc scan_alt (j + 1) in
+                  k, Named_subs (idr, Some kdr, e)
+                end
+              end
+              else fail (j - 2, j) "Substring name missing."
+            | _ -> fail (i, i + 1) "Unbalanced '<'."
+          end
+        | 'U' ->
+          let j, idr = scan_ident (i + 3) in
           if get j <> '>' then fail (i, i + 1) "Unbalanced '<'."
-          else (
+          else begin
             let k, e = with_loc scan_alt (j + 1) in
-            k, Named_as (idr, e))
+            k, Unnamed_subs (idr, e)
+          end
         | ':' -> scan_alt (i + 2)
         | '#' ->
           (try String.index_from s (i + 2) ')', Seq [] with Not_found -> fail (i - 1, i + 1) "Unterminated comment.")

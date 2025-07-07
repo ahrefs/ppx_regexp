@@ -26,7 +26,8 @@ and 'a node =
   | Nongreedy of 'a t
   | Capture of 'a t
   | Capture_as of string Location.loc * 'a t
-  | Named_as of string Location.loc * 'a t
+  | Named_subs of string Location.loc * string Location.loc option * 'a t
+  | Unnamed_subs of string Location.loc * 'a t
   | Call of Longident.t Location.loc
 (* TODO: | Case_sense of t | Case_blind of t *)
 

@@ -39,8 +39,9 @@ module Ctx = struct
   let find name ctx = Hashtbl.find_opt ctx name
 
   let update_used name ctx =
-    let old_value, _ = Hashtbl.find ctx name in
-    Hashtbl.replace ctx name (old_value, true)
+    match Hashtbl.find_opt ctx name with
+    | Some (old_value, _) -> Hashtbl.replace ctx name (old_value, true)
+    | None -> ()
 
   let is_used name ctx = Hashtbl.find_opt ctx name |> Option.value ~default:("", false) |> snd
 end
@@ -60,7 +61,9 @@ module Regexp = struct
       | Nongreedy e -> recurse must_match e
       | Capture _ -> error ~loc "Unnamed capture is not allowed for %%pcre."
       | Capture_as (idr, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
-      | Named_as (idr, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
+      | Named_subs (idr, None, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
+      | Named_subs (_, Some idr, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, must_match) :: bs)
+      | Unnamed_subs (_, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, bs)
       | Call _ -> error ~loc "(&...) is not implemented for %%pcre."
     in
     function
@@ -86,7 +89,7 @@ module Regexp = struct
       | Nongreedy e -> recurse p_suffix e ^ "?"
       | Capture _ -> error ~loc "Unnamed capture is not allowed for %%pcre."
       | Capture_as (_, e) -> "(" ^ recurse p_alt e ^ ")"
-      | Named_as (idr, _) ->
+      | Named_subs (idr, _, _) | Unnamed_subs (idr, _) ->
         let var_name = idr.txt in
         let content =
           match Ctx.find var_name ctx with
@@ -121,6 +124,7 @@ let rec must_match p i =
 let extract_bindings ~ctx ~pos s =
   let r = Regexp.parse_exn ~pos s in
   let nG, bs = Regexp.bindings r in
+  List.iter (fun (idr, i, b) -> Format.printf "%s, %i, %b@." idr.txt (match i with Some i -> i | None -> -1) b) bs;
   let re_str = Regexp.to_string ~ctx r in
   let loc = Location.none in
   estring ~loc re_str, bs, nG
@@ -275,9 +279,9 @@ let suppress_unused_inlined ctx =
 let impl str =
   let ctx = Ctx.empty () in
   let str, rev_bindings = (transformation ctx)#structure str [] in
-  let str = (suppress_unused_inlined ctx)#structure str in
   if rev_bindings = [] then str
   else (
+    let str = (suppress_unused_inlined ctx)#structure str in
     let re_str =
       let loc = Location.none in
       [%str
