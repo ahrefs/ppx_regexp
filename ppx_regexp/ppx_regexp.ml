@@ -32,18 +32,11 @@ module List = struct
 end
 
 module Ctx = struct
-  (* name -> (value, is_used) *)
-  type t = (string, string * bool) Hashtbl.t
+  (* name -> parsed value) *)
+  type t = (string, label Regexp.t) Hashtbl.t
 
   let empty () = Hashtbl.create 16
   let find name ctx = Hashtbl.find_opt ctx name
-
-  let update_used name ctx =
-    match Hashtbl.find_opt ctx name with
-    | Some (old_value, _) -> Hashtbl.replace ctx name (old_value, true)
-    | None -> ()
-
-  let is_used name ctx = Hashtbl.find_opt ctx name |> Option.value ~default:("", false) |> snd
 end
 
 module Regexp = struct
@@ -75,15 +68,14 @@ module Regexp = struct
     let delimit_if b s = if b then "(?:" ^ s ^ ")" else s in
     let rec recurse p (e' : _ Location.loc) =
       let loc = e'.Location.loc in
-      let parse_inside idr =
+      let get_parsed idr =
         let var_name = idr.txt in
         let content =
           match Ctx.find var_name ctx with
-          | Some (value, _) -> parse_exn value
+          | Some value -> value
           | None ->
             error ~loc "Variable '%s' not found. %%pcre only supports global let bindings for substitution." var_name
         in
-        Ctx.update_used var_name ctx;
         content
       in
       match e'.Location.txt with
@@ -101,10 +93,10 @@ module Regexp = struct
       | Capture _ -> error ~loc "Unnamed capture is not allowed for %%pcre."
       | Capture_as (_, e) -> "(" ^ recurse p_alt e ^ ")"
       | Named_subs (idr, _, _) ->
-        let content = parse_inside idr in
+        let content = get_parsed idr in
         "(" ^ recurse p_alt content ^ ")"
       | Unnamed_subs (idr, _) ->
-        let content = parse_inside idr in
+        let content = get_parsed idr in
         recurse p_alt content
       | Call _ -> error ~loc "(&...) is not implemented for %%pcre."
     in
@@ -217,26 +209,49 @@ let transform_cases ~opts ~loc ~ctx cases =
   in
   cases, re_binding
 
+let check_unbounded_recursion var_name content =
+  let contains_regex pattern str =
+    let re = Re.Str.regexp pattern in
+    try
+      Re.Str.search_forward re str 0 |> ignore;
+      true
+    with Not_found -> false
+  in
+  let u = Printf.sprintf {|(\?U<%s>)|} var_name in
+  let n = Printf.sprintf {|(\?N<%s>)|} var_name in
+  let n_as = Printf.sprintf {|(\?N<%s as [^>]*>)|} var_name in
+  contains_regex u content || contains_regex n content || contains_regex n_as content
+
+let transform_let ~ctx =
+  List.map
+    begin
+      fun vb ->
+        match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+        | Ppat_var { txt = var_name; loc }, Pexp_constant (Pconst_string (value, _, _)) ->
+          if check_unbounded_recursion var_name value then error ~loc "Unbounded recursion detected!"
+          else begin
+            let parsed = Regexp.parse_exn value in
+            Hashtbl.replace ctx var_name parsed;
+            let warning_attr =
+              attribute ~loc ~name:{ txt = "ocaml.warning"; loc }
+                ~payload:(PStr [ { pstr_desc = Pstr_eval (estring ~loc "-32", []); pstr_loc = loc } ])
+            in
+            { vb with pvb_attributes = warning_attr :: vb.pvb_attributes }
+          end
+        | _ -> vb
+    end
+
 let transformation ctx =
   object
     inherit [value_binding list] Ast_traverse.fold_map as super
 
     method! structure_item item acc =
-      begin
-        match item.pstr_desc with
-        | Pstr_value (_, vbs) ->
-          List.iter
-            begin
-              fun vb ->
-                match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
-                | Ppat_var { txt = name; _ }, Pexp_constant (Pconst_string (value, _, _)) ->
-                  Hashtbl.replace ctx name (value, false)
-                | _ -> ()
-            end
-            vbs
-        | _ -> ()
-      end;
-      super#structure_item item acc
+      match item.pstr_desc with
+      | Pstr_extension (({ txt = "pcre"; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
+        let bindings = transform_let ~ctx vbs in
+        let new_item = { item with pstr_desc = Pstr_value (rec_flag, bindings) } in
+        new_item, acc
+      | _ -> super#structure_item item acc
 
     method! expression e_ext acc =
       let e_ext, acc = super#expression e_ext acc in
@@ -248,10 +263,9 @@ let transformation ctx =
               [%e cases]],
             binding :: acc )
         | Pexp_function cases ->
-          (* | Pexp_function (_, _, Pfunction_cases (cases, _, _)) -> *)
           let cases, binding = transform_cases ~opts ~loc ~ctx cases in
           [%expr fun _ppx_regexp_v -> [%e cases]], binding :: acc
-        | _ -> error ~loc "[%%pcre] only applies to match and function."
+        | _ -> error ~loc "[%%pcre] only applies to match, function and global let declarations of strings."
       in
       match e_ext.pexp_desc with
       | Pexp_extension ({ txt = "pcre"; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
@@ -263,43 +277,11 @@ let transformation ctx =
       | _ -> e_ext, acc
   end
 
-let suppress_unused_inlined ctx =
-  object
-    inherit Ast_traverse.map as super
-
-    method! structure_item item =
-      match item.pstr_desc with
-      | Pstr_value (rec_flag, bindings) ->
-        let bindings =
-          List.map
-            begin
-              fun binding ->
-                match binding.pvb_pat.ppat_desc, binding.pvb_expr.pexp_desc with
-                | Ppat_var { txt = var_name; _ }, Pexp_constant (Pconst_string (_, _, _)) ->
-                  let needs_suppression = Ctx.is_used var_name ctx in
-                  if needs_suppression then begin
-                    let loc = binding.pvb_loc in
-                    let warning_attr =
-                      attribute ~loc ~name:{ txt = "ocaml.warning"; loc }
-                        ~payload:(PStr [ { pstr_desc = Pstr_eval (estring ~loc "-32", []); pstr_loc = loc } ])
-                    in
-                    { binding with pvb_attributes = warning_attr :: binding.pvb_attributes }
-                  end
-                  else binding
-                | _ -> binding
-            end
-            bindings
-        in
-        { item with pstr_desc = Pstr_value (rec_flag, bindings) }
-      | _ -> super#structure_item item
-  end
-
 let impl str =
   let ctx = Ctx.empty () in
   let str, rev_bindings = (transformation ctx)#structure str [] in
   if rev_bindings = [] then str
   else (
-    let str = (suppress_unused_inlined ctx)#structure str in
     let re_str =
       let loc = Location.none in
       [%str
