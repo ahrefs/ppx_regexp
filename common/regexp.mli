@@ -15,20 +15,5 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  *)
 
-type 'a t = 'a node Location.loc
-
-and 'a node =
-  | Code of 'a
-  | Seq of 'a t list
-  | Alt of 'a t list
-  | Opt of 'a t
-  | Repeat of (int * int option) Location.loc * 'a t
-  | Nongreedy of 'a t
-  | Capture of 'a t
-  | Capture_as of string Location.loc * 'a t
-  | Named_subs of string Location.loc * string Location.loc option * 'a t
-  | Unnamed_subs of string Location.loc * 'a t
-  | Call of Longident.t Location.loc
-(* TODO: | Case_sense of t | Case_blind of t *)
-
-val parse_exn : ?pos:Lexing.position -> string -> string t
+val parse_exn : ?pos:Lexing.position -> string -> string Regexp_types.t
+val parse_mik_exn : ?pos:Lexing.position -> string -> string Regexp_types.t

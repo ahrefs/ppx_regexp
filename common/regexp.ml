@@ -15,24 +15,7 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  *)
 
-let mkloc = Location.mkloc
-let ( % ) f g x = f (g x)
-
-type 'a t = 'a node Location.loc
-
-and 'a node =
-  | Code of 'a
-  | Seq of 'a t list
-  | Alt of 'a t list
-  | Opt of 'a t
-  | Repeat of (int * int option) Location.loc * 'a t
-  | Nongreedy of 'a t
-  | Capture of 'a t
-  | Capture_as of string Location.loc * 'a t
-  | Named_subs of string Location.loc * string Location.loc option * 'a t
-  | Unnamed_subs of string Location.loc * 'a t
-  | Call of Longident.t Location.loc
-(* TODO: | Case_sense of t | Case_blind of t *)
+open Regexp_types
 
 let nonepsilon = function { Location.txt = Seq []; _ } -> false | _ -> true
 let simplify_seq ~loc es = match List.filter nonepsilon es with [ e ] -> e | es -> mkloc (Seq es) loc
@@ -233,7 +216,7 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
           let j, idr = scan_ident (i + 2) in
           if get j = ':' then (
             let k, lidr = scan_longident (j + 1) in
-            k, Capture_as (idr, wrap_loc (j + 1, k) (Call lidr)))
+            k, Capture_as (idr, None, wrap_loc (j + 1, k) (Call lidr)))
           else (
             let k, lidr = scan_longident_cont idr.Location.txt j in
             k, Call lidr)
@@ -242,14 +225,14 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
           if get j <> '>' then fail (i, i + 1) "Unbalanced '<'."
           else (
             let k, e = with_loc scan_alt (j + 1) in
-            k, Capture_as (idr, e))
+            k, Capture_as (idr, None, e))
         | 'N' ->
           let j, idr = scan_ident (i + 3) in
           begin
             match get j with
             | '>' ->
               let k, e = with_loc scan_alt (j + 1) in
-              k, Named_subs (idr, None, e)
+              k, Named_subs (idr, None, None, e)
             | ' ' ->
               let j, jdr = scan_ident (j + 1) in
               if jdr.txt = "as" && get j = ' ' then begin
@@ -257,7 +240,7 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
                 if get j <> '>' then fail (j, j + 1) "Unbalanced '<'."
                 else begin
                   let k, e = with_loc scan_alt (j + 1) in
-                  k, Named_subs (idr, Some kdr, e)
+                  k, Named_subs (idr, Some kdr, None, e)
                 end
               end
               else fail (j - 2, j) "Substring name missing."
@@ -285,3 +268,58 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
   let scan_toplevel i = if get i = '?' && get (i + 1) = '<' then scan_group i else scan_alt i in
   let j, e = with_loc scan_toplevel 0 in
   if j <> l then fail (j, j + 1) "Unbalanced ')'." else e
+
+let parse_mik_exn ?(pos = Lexing.dummy_pos) s =
+  let lexbuf = Lexing.from_string s in
+  let mk_loc ?loc pos lexbuf =
+    let open Lexing in
+    let open Location in
+    match loc with
+    | Some loc ->
+      {
+        loc_ghost = false;
+        loc_start =
+          {
+            pos_fname = pos.pos_fname;
+            pos_lnum = pos.pos_lnum + (loc.loc_start.pos_lnum - 1);
+            pos_bol = pos.pos_bol;
+            pos_cnum = pos.pos_cnum + loc.loc_start.pos_cnum;
+          };
+        loc_end =
+          {
+            pos_fname = pos.pos_fname;
+            pos_lnum = pos.pos_lnum + (loc.loc_end.pos_lnum - 1);
+            pos_bol = pos.pos_bol;
+            pos_cnum = pos.pos_cnum + loc.loc_end.pos_cnum;
+          };
+      }
+    | None ->
+      {
+        loc_ghost = false;
+        loc_start =
+          {
+            pos_fname = pos.pos_fname;
+            pos_lnum = pos.pos_lnum;
+            pos_bol = pos.pos_bol;
+            pos_cnum = pos.pos_cnum + lexbuf.lex_start_p.pos_cnum;
+          };
+        loc_end =
+          {
+            pos_fname = pos.pos_fname;
+            pos_lnum = pos.pos_lnum;
+            pos_bol = pos.pos_bol;
+            pos_cnum = pos.pos_cnum + lexbuf.lex_curr_p.pos_cnum;
+          };
+      }
+  in
+
+  try Mik_parser.main Mik_lexer.token lexbuf with
+  | Mik_lexer.Error msg ->
+    let loc = mk_loc pos lexbuf in
+    Location.raise_errorf ~loc "%s" msg
+  | PError (loc, msg) ->
+    let loc = mk_loc ~loc pos lexbuf in
+    Location.raise_errorf ~loc "Syntax error: %s" msg
+  | Mik_parser.Error ->
+    let loc = mk_loc pos lexbuf in
+    Location.raise_errorf ~loc "Syntax error"
