@@ -12,7 +12,7 @@
 (tests
   (names test_ppx_regexp test_ppx_regexp_unused)
   (modules test_ppx_regexp test_ppx_regexp_unused)
-  (package ppx_regexp)
+  (package ppx_regexp_extended)
   (libraries re re.perl)
   (preprocess (pps ppx_regexp)))
 
@@ -35,4 +35,4 @@
   (name main)
   (modules Main)
   ; (libraries ppx_regexp ppx_tyre ocaml-migrate-parsetree))
-  (libraries ppx_regexp ocaml-migrate-parsetree))
+  (libraries ppx_regexp_extended ocaml-migrate-parsetree))
