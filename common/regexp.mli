@@ -15,5 +15,5 @@
  * along with this library.  If not, see <http://www.gnu.org/licenses/>.
  *)
 
-val parse_exn : ?pos:Lexing.position -> string -> string Regexp_types.t
-val parse_mik_exn : ?pos:Lexing.position -> string -> string Regexp_types.t
+val parse_exn : target:[< `Let | `Match ] -> ?pos:Lexing.position -> string -> string Regexp_types.t
+val parse_mik_exn : target:[< `Let | `Match ] -> ?pos:Lexing.position -> string -> string Regexp_types.t

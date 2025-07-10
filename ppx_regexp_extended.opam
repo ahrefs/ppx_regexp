@@ -1,12 +1,12 @@
 opam-version: "2.0"
-maintainer: "Petter A. Urkedal <paurkedal@gmail.com>"
+maintainer: "Leonardo Santos <leomendesantos@gmail.com>"
 authors: [
   "Petter A. Urkedal <paurkedal@gmail.com>"
   "Gabriel Radanne <drupyog@zoho.com>"
 ]
 license: "LGPL-3.0-or-later WITH LGPL-3.0-linking-exception"
-homepage: "https://github.com/paurkedal/ppx_regexp"
-bug-reports: "https://github.com/paurkedal/ppx_regexp/issues"
+homepage: "https://github.com/ahrefs/ppx_regexp"
+bug-reports: "https://github.com/ahrefs/ppx_regexp/issues"
 depends: [
   "ocaml" {>= "4.02.3"}
   "dune" {>= "1.11"}
@@ -18,21 +18,31 @@ conflicts: [
   "ppx_regexp"
 ]
 build: ["dune" "build" "-p" name "-j" jobs]
-dev-repo: "git+https://github.com/paurkedal/ppx_regexp.git"
+dev-repo: "git+https://github.com/ahrefs/ppx_regexp.git"
 synopsis: "Matching Regular Expressions with OCaml Patterns"
 description: """
 This syntax extension turns
-
-    match%pcre x with
-    | {|re1|} -> e1
-    ...
-    | {|reN|} -> eN
-    | _ -> e0
-
-into suitable invocations to the ocaml-re library.  The patterns are plain
-strings of the form accepted by `Re_pcre`, except groups can be bound to
-variables using the syntax `(?<var>...)`.  The type of `var` will be
-`string` if a match is of the groups is guaranteed given a match of the
-whole pattern, and `string option` if the variable is bound to or nested
+match%pcre x with
+| {|re1|} -> e1
+...
+| {|reN|} -> eN
+| _ -> e0
+into suitable invocations to the ocaml-re library. The patterns are plain
+strings of the form accepted by Re_pcre, except groups can be bound to
+variables using the syntax (?<var>...). The type of var will be
+string if a match is of the groups is guaranteed given a match of the
+whole pattern, and string option if the variable is bound to or nested
 below an optionally matched group.
+
+Additional extensions:
+
+- (?N<var>) and (?N<var as name>) provide named substitution, and make the
+matched substring available in the right-hand side of match cases
+- (?U<var>) marks groups whose substrings are not needed in the right-hand side
+- let%pcre name = {|re|} defines reusable patterns for use within (?U/N<name>) patterns
+- match%pcre_i provides case-insensitive matching
+- match%mik supports mikmatch-style syntax with typed captures and pattern
+composition, along with let%mik for defining reusable patterns
+- match%mik_i provides case-insensitive mikmatch-style matching
+- Matching guards are supported across all match extensions
 """

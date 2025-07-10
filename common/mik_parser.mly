@@ -46,7 +46,8 @@ let unclosed_error what startpos endpos =
 %token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON AS
 %token INT_CONVERTER FLOAT_CONVERTER EOF
 
-%start <string t> main
+%start <string t> main_match_case
+%start <string t> main_let_expr
 %start <string t> pattern
 
 /* operator precedence from lowest to highest */
@@ -57,11 +58,14 @@ let unclosed_error what startpos endpos =
 
 %%
 
-main:
+main_match_case:
   | SLASH p = pattern SLASH EOF { p }
   | SLASH pattern EOF { unclosed_error "pattern (missing closing '/')" $startpos($1) $endpos }
   | SLASH error { syntax_error "Invalid pattern after opening slash" $startpos($2) $endpos($2) }
   | error { syntax_error "Expected pattern to start with '/'" $startpos($1) $endpos($1) }
+
+main_let_expr:
+  | p = pattern EOF { p }
 
 pattern:
   | alt_expr { $1 }

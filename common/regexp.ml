@@ -35,7 +35,7 @@ module Int_map = struct
   include M
 end
 
-let parse_exn ?(pos = Lexing.dummy_pos) s =
+let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
   let l = String.length s in
   let get i = if i = l then ')' else s.[i] in
 
@@ -269,7 +269,7 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
   let j, e = with_loc scan_toplevel 0 in
   if j <> l then fail (j, j + 1) "Unbalanced ')'." else e
 
-let parse_mik_exn ?(pos = Lexing.dummy_pos) s =
+let parse_mik_exn ~target ?(pos = Lexing.dummy_pos) s =
   let lexbuf = Lexing.from_string s in
   let mk_loc ?loc pos lexbuf =
     let open Lexing in
@@ -312,8 +312,8 @@ let parse_mik_exn ?(pos = Lexing.dummy_pos) s =
           };
       }
   in
-
-  try Mik_parser.main Mik_lexer.token lexbuf with
+  let main = match target with `Match -> Mik_parser.main_match_case | `Let -> Mik_parser.main_let_expr in
+  try main Mik_lexer.token lexbuf with
   | Mik_lexer.Error msg ->
     let loc = mk_loc pos lexbuf in
     Location.raise_errorf ~loc "%s" msg
