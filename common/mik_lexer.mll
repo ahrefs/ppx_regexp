@@ -6,23 +6,24 @@ let new_line lexbuf =
   Lexing.new_line lexbuf
 
 let predefined_classes = [
-  ("lower", {|[a-z]|});
-  ("upper", {|[A-Z]|});
-  ("alpha", {|[a-zA-Z]|});
-  ("digit", {|[0-9]|});
-  ("alnum", {|[a-zA-Z0-9]|});
-  ("punct", {|[!-/:-@\\[-`{-~]|});
-  (* ("graph", {|[!-~]|}); *)
-  (* ("print", {|[!-~]|}); *)
-  ("blank", {|[ \t]|});
+  ("lower", {|[[:lower:]]|});
+  ("upper", {|[[:upper:]]|});
+  ("alpha", {|[[:alpha:]]|});
+  ("digit", {|[[:digit:]]|});
+  ("alnum", {|[[:alnum:]]|});
+  ("punct", {|[[:punct:]]|});
+  ("graph", {|[[:graph:]]|});
+  ("print", {|[[:print:]]|});
+  ("blank", {|[[:blank:]]|});
   ("cntrl", {|[[:cntrl:]]|});
-  ("xdigit", {|[0-9A-Fa-f]|});
+  ("xdigit", {|[[:xdigit:]]|});
   ("space", {|[[:space:]]|});
-  ("word", {|[a-zA-Z0-9_]|});
+  ("word", {|[[:word:]]|});
   ("eos", {|$|});
   ("eol", {|$|[\n]|});
+  ("bnd", {|\b|});
   ("bos", {|^|});
-  ("any", {|.|});
+  ("any", {|[^\n]|});
 ]
 
 let escape_char = function
@@ -77,11 +78,12 @@ rule token = parse
   | '?' { QUESTION }
   | '_' { UNDERSCORE }
   | ':' { COLON }
+  | '=' { EQUAL }
   | "as" { AS }
   | "int" { INT_CONVERTER }
   | "float" { FLOAT_CONVERTER }
   | digit+ as n { INT (int_of_string n) }
-  | ident as id { 
+  | ident as id {
       match List.assoc_opt id predefined_classes with
       | Some pcre_class -> PREDEFINED_CLASS pcre_class
       | None -> IDENT id
@@ -99,33 +101,33 @@ and char_literal buf = parse
   | '\'' { CHAR_LITERAL (Buffer.contents buf) }
   | ('(' as c) | (')' as c) {
        Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf 
+       char_literal buf lexbuf
      }
   | ('{' as c) | ('}' as c) {
        Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf 
+       char_literal buf lexbuf
      }
   | ('[' as c) | (']' as c) {
        Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf 
+       char_literal buf lexbuf
      }
   | ('.' as c) | ('*' as c) | ('+' as c) | ('?' as c) | ('^' as c) | ('$' as c) | ('|' as c) {
        Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf 
+       char_literal buf lexbuf
      }
-  | _ as c { 
+  | _ as c {
       Buffer.add_char buf c;
       char_literal buf lexbuf
     }
   | eof { raise (Error "Unterminated character literal") }
 
 and string_literal buf = parse
-  | '\\' (_ as c) { 
+  | '\\' (_ as c) {
       Buffer.add_char buf (escape_char c);
       string_literal buf lexbuf
     }
   | '"' { STRING_LITERAL (Buffer.contents buf) }
-  | _ as c { 
+  | _ as c {
       Buffer.add_char buf c;
       string_literal buf lexbuf
     }

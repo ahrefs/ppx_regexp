@@ -20,5 +20,6 @@ and 'a node =
 (* TODO: | Case_sense of t | Case_blind of t *)
 
 and conv_ty =
-  | Int : conv_ty
-  | Float : conv_ty
+  | Int
+  | Float
+  | Func of string

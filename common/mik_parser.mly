@@ -43,7 +43,7 @@ let unclosed_error what startpos endpos =
 %token <string> CHAR_LITERAL STRING_LITERAL IDENT PREDEFINED_CLASS
 %token <int> INT
 %token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE
-%token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON AS
+%token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS
 %token INT_CONVERTER FLOAT_CONVERTER EOF
 
 %start <string t> main_match_case
@@ -160,13 +160,13 @@ basic_atom:
   | LPAREN RPAREN { missing_error "pattern inside parentheses" $startpos $endpos }
   | LPAREN pattern EOF? { unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($2) }
 
-  | LPAREN IDENT RPAREN  {
+  | LPAREN IDENT RPAREN {
       let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
       let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
       wrap_loc $startpos $endpos (Named_subs (ident_loc, None, None, pattern_node))
     }
   | LPAREN IDENT AS RPAREN { missing_error "name after 'as'" $startpos($3) $endpos($4) }
-  | LPAREN IDENT AS name = IDENT RPAREN  {
+  | LPAREN IDENT AS name = IDENT RPAREN {
       let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
@@ -175,20 +175,26 @@ basic_atom:
   | LPAREN IDENT AS IDENT COLON RPAREN {
       missing_error "type converter after ':'" $startpos($5) $endpos($6) 
     }
-  | LPAREN IDENT AS name = IDENT COLON INT_CONVERTER RPAREN   {
+  | LPAREN IDENT AS name = IDENT COLON INT_CONVERTER RPAREN {
       let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
       wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, Some Int, pattern_node))
     }
-  | LPAREN IDENT AS name = IDENT COLON FLOAT_CONVERTER RPAREN   {
+  | LPAREN IDENT AS name = IDENT COLON FLOAT_CONVERTER RPAREN {
       let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
       wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, Some Float, pattern_node))
     }
+  | LPAREN IDENT AS name = IDENT COLON EQUAL func = IDENT RPAREN {
+      let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
+      wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, Some (Func func), pattern_node))
+    }
   | LPAREN IDENT AS IDENT EOF? { 
-      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4) 
+      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4)
     }
   | LPAREN IDENT AS IDENT COLON INT_CONVERTER EOF? {
       unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
@@ -198,14 +204,17 @@ basic_atom:
     }
 
   | LPAREN pattern AS RPAREN { missing_error "capture name after 'as'" $startpos($3) $endpos($4) }
-  | LPAREN pattern AS name = IDENT RPAREN  {
+  | LPAREN pattern AS name = IDENT RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, None, $2))
     }
-  | LPAREN pattern AS IDENT COLON RPAREN { 
-      missing_error "type converter after ':'" $startpos($5) $endpos($6) 
+  | LPAREN pattern AS IDENT COLON RPAREN {
+      missing_error "type converter after ':'" $startpos($5) $endpos($6)
     }
-  | LPAREN pattern AS name = IDENT COLON INT_CONVERTER RPAREN  {
+  | LPAREN pattern AS IDENT COLON EQUAL RPAREN {
+      missing_error "function name after ':='" $startpos($5) $endpos($6)
+    }
+  | LPAREN pattern AS name = IDENT COLON INT_CONVERTER RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some Int, $2))
     }
@@ -213,14 +222,18 @@ basic_atom:
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some Float, $2))
     }
+  | LPAREN pattern AS name = IDENT COLON EQUAL func = IDENT RPAREN {
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func func), $2))
+    }
   | LPAREN pattern AS IDENT EOF? {
-      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4) 
+      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4)
     }
   | LPAREN pattern AS IDENT COLON INT_CONVERTER EOF? {
-      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6) 
+      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
     }
   | LPAREN pattern AS IDENT COLON FLOAT_CONVERTER EOF? {
-      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6) 
+      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
     }
 
   | LPAREN error { syntax_error "Invalid expression in parentheses" $startpos($2) $endpos }

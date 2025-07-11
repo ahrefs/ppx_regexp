@@ -182,6 +182,9 @@ let rec wrap_group_bindings ~loc rhs offG = function
       | None -> eG
       | Some Regexp_types.Int -> [%expr int_of_string [%e eG]]
       | Some Regexp_types.Float -> [%expr float_of_string [%e eG]]
+      | Some (Regexp_types.Func func_name) ->
+        let func_ident = pexp_ident ~loc { txt = Lident func_name; loc } in
+        [%expr [%e func_ident] [%e eG]]
     in
     let eG = if mustG then eG else [%expr try Some [%e eG] with Not_found -> None] in
     [%expr

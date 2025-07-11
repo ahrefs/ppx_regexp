@@ -4,8 +4,10 @@
 
 This repo provides two PPXes providing regular expression-based routing:
 
-- `ppx_regexp` maps to [re][] with the conventional last-match extraction
-  into `string` and `string option`.
+- `ppx_regexp_extended` maps to [re][] with the conventional last-match extraction
+  into `string` and `string option`. Two syntaxes for regular expressions available:
+  - `pcre`: The syntax of regular PCRE expressions
+  - `mikmatch`: Mimics the syntax of the [mikmatch](https://mjambon.github.io/mjambon2016/mikmatch-manual.html) tool
 - `ppx_tyre` maps to [Tyre][tyre] providing typed extraction into options,
   lists, tuples, objects, and polymorphic variants.
 
@@ -13,9 +15,9 @@ Another difference is that `ppx_regexp` works directly on strings
 essentially hiding the library calls, while `ppx_tyre` provides `Tyre.t` and
 `Tyre.route` which can be composed an applied using the Tyre library.
 
-## `ppx_regexp` - Regular Expression Matching with OCaml Patterns
+## `ppx_regexp_extended` - Regular Expression Matching with OCaml Patterns
 
-This syntax extension turns
+This syntax extension turns:
 ```ocaml
 function%pcre
 | {|re1|} -> e1
@@ -23,29 +25,81 @@ function%pcre
 | {|reN|} -> eN
 | _ -> e0
 ```
-into suitable invocations of the [Re library][re], and similar for
-`match%pcre`.  The patterns are plain strings of the form accepted by
-`Re_pcre`, with the following additions:
+(or `function%mik`) into suitable invocations of the [Re library][re], and similar for `match%pcre`/`match%mik`.
+
+It also accepts:
+```ocaml
+let%pcre var = {| some regex |}
+(* and *)
+let%mik var = {| some regex |}
+```
+
+### `%pcre`
+
+The patterns are plain strings of the form accepted by `Re.Pcre`, with the following additions:
 
   - `(?<var>...)` defines a group and binds whatever it matches as `var`.
     The type of `var` will be `string` if the match is guaranteed given that
     the whole pattern matches, and `string option` if the variable is bound
     to or nested below an optionally matched group.
 
+  - `(N?<var>)` gets substituted by the value of the globally defined string variable named `var`,
+    and binds whatever it matches as `var`.
+    The type of `var` will be the same as `(?<var>...)`.
+
+  - `(N?<var as name>)` gets substituted by the value of the globally defined string variable named `var`,
+    and binds whatever it matches as `name`.
+    The type of `name` will be the same as `(?<var>...)`.
+
+  - `(U?<var>)` gets substituted by the value of the globally defined string variable named `var`,
+    and does not bind its match to any name.
+
   - `?<var>` at the start of a pattern binds group 0 as `var : string`.
     This may not be the full string if the pattern is unanchored.
 
 A variable is allowed for the universal case and is bound to the matched
-string.  A regular alias is currently not allowed for patterns, since it is
-not obvious whether is should bind the full string or group 0.
+string.
+
+### `%mik`
+
+The syntax that this extension accepts is as follows:
+
+  -  `char-literal`: Match the given character (priority 0).
+  -  `_` (underscore): Match any character (priority 0).
+  -  `string-literal`: Match the given sequence of characters (priority 0).
+  -  `[set-of-characters]`: Character class, match one of the characters given by set-of-characters (priority 0). The grammar for set-of-characters is the following:
+      - `char-literal`−`char-literal`: defines a range of characters according to the iso-8859-1 encoding (includes ASCII).
+      - `char-literal`: defines a singleton (a set containing just this character).
+      - `string-literal`: defines a set that contains all the characters present in the given string.
+      - `lowercase-identifier`: is replaced by the corresponding predefined regular expression; this regular expression must be exactly of length 1 and therefore represents a set of characters.
+      - `set-of-characters`: set-of-characters defines the union of two sets of characters. 
+  -  `[^set-of-characters]`: Negative character class
+  -  `regexp *`: Match the pattern given by regexp 0 time or more (priority 0).
+  -  `regexp +`: Match the pattern given by regexp 1 time or more (priority 0).
+  -  `regexp ?`: Match the pattern given by regexp at most once (priority 0).
+  -  `regexp{m−n}`: Match regexp at least `m` times and up to `n` times. `m` and `n` must be integer literals (priority 0).
+  -  `regexp{n}`: Same as regexp{n−n} (priority 0).
+  -  `( regexp )`: Match regexp (priority 0).
+  -  `regexp regexp`: Match the first regular expressions and then the second one (priority 1).
+  -  `regexp | regexp`: Match one of these two regular expressions (priority 2).
+  -  `regexp as lowercase-identifier`: Give a name to the substring that will be matched by the given pattern. This string becomes available under this name (priority 3).
+     In-place conversions of the matched substring can be performed using one these three mechanisms:
+      - `regexp as lowercase-identifier : int`: `int` behaves as `int_of_string`
+      - `regexp as lowercase-identifier : float`: `float` behaves as `float_of_string`
+      - `regexp as lowercase-identifier := converter`: where `converter` is any function which converts a string into something else.
+
+In addition, the following predefined character classes are available:
+  - **POSIX character classes:** `lower`, `upper`, `alpha`, `digit`, `alnum`, `punct`, `graph`, `print`, `blank`, `space`, `cntrl`, `xdigit`, `word`
+  - **Control sequences:** `eos` (same as `$`), `eol` (end of string or newline), `bnd` (word boundary `\b`), `bos` (same as `^`), `any` (any character except newline)
 
 ### Example
 
-The following prints out times and hosts for SMTP connections to the Postfix
-daemon:
+The following prints out times and hosts for SMTP connections to the Postfix daemon:
+
+#### `%pcre`
 ```ocaml
 (* Link with re, re.pcre, lwt, lwt.unix.
-   Preprocess with ppx_regexp.
+   Preprocess with ppx_regexp_extended.
    Adjust to your OS. *)
 
 open Lwt.Infix
@@ -53,6 +107,29 @@ open Lwt.Infix
 let check_line =
   (function%pcre
    | {|(?<t>.*:\d\d) .* postfix/smtpd\[[0-9]+\]: connect from (?<host>[a-z0-9.-]+)|} ->
+      Lwt_io.printlf "%s %s" t host
+   | _ ->
+      Lwt.return_unit)
+
+let () = Lwt_main.run begin
+  Lwt_io.printl "SMTP connections from:" >>= fun () ->
+  Lwt_stream.iter_s check_line (Lwt_io.lines_of_file "/var/log/syslog")
+end
+```
+
+#### `%mik`
+```ocaml
+(* Link with re, re.pcre, lwt, lwt.unix.
+   Preprocess with ppx_regexp_extended.
+   Adjust to your OS. *)
+
+open Lwt.Infix
+
+let%mik host = {| [a-z0-9.-]+ |}
+
+let check_line =
+  (function%mik
+   | {|/ (any* ':' digit digit as t) ' ' (any*) ' ' "postfix/smtpd" '[' digit+ ']' ": connect from " (host) /|} ->
       Lwt_io.printlf "%s %s" t host
    | _ ->
       Lwt.return_unit)
@@ -142,12 +219,16 @@ The syntax follow Perl's syntax:
 
 ## Limitations
 
-### No Pattern Guards
+### (ppx_tyre) No Pattern Guards
 
-Pattern guards are not supported.  This is due to the fact that all match
-cases are combined into a single regular expression, so if one of the
+Pattern guards are not supported for `ppx_tyre`.
+This is due to the fact that all match cases are combined into a single regular expression, so if one of the
 patterns succeed, the match is committed before we can check the guard
 condition.
+
+`ppx_regexp_extended` gets around this by grouping match cases with the same guards and compiling those together, instead
+of every match case being compiled into one RE.
+
 
 ### No Exhaustiveness Check
 
@@ -162,8 +243,5 @@ The processor is currently new and not well tested.  Please break it and
 file bug reports in the GitHub issue tracker.  Any exception raised by
 generated code except for `Match_failure` is a bug.
 
-
-[ci]: https://travis-ci.org/paurkedal/ppx_regexp
-[ci-build-status]: https://travis-ci.org/paurkedal/ppx_regexp.svg?branch=master
 [re]: https://github.com/ocaml/ocaml-re
 [tyre]: https://github.com/Drup/tyre
