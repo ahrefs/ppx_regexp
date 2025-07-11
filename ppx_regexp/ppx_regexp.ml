@@ -183,7 +183,19 @@ let rec wrap_group_bindings ~loc rhs offG = function
       | Some Regexp_types.Int -> [%expr int_of_string [%e eG]]
       | Some Regexp_types.Float -> [%expr float_of_string [%e eG]]
       | Some (Regexp_types.Func func_name) ->
-        let func_ident = pexp_ident ~loc { txt = Lident func_name; loc } in
+        let longident =
+          match String.split_on_char '.' func_name with
+          | [] -> assert false
+          | [ name ] -> Lident name
+          | module_path ->
+            let rec build_longident = function
+              | [] -> assert false
+              | [ name ] -> Lident name
+              | module_name :: rest -> Ldot (build_longident rest, module_name)
+            in
+            build_longident (List.rev module_path)
+        in
+        let func_ident = pexp_ident ~loc { txt = longident; loc } in
         [%expr [%e func_ident] [%e eG]]
     in
     let eG = if mustG then eG else [%expr try Some [%e eG] with Not_found -> None] in

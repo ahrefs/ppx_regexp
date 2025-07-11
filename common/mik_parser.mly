@@ -40,7 +40,7 @@ let unclosed_error what startpos endpos =
   syntax_error (Printf.sprintf "Unclosed %s" what) startpos endpos
 %}
 
-%token <string> CHAR_LITERAL STRING_LITERAL IDENT PREDEFINED_CLASS
+%token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS
 %token <int> INT
 %token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE
 %token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS
@@ -187,6 +187,7 @@ basic_atom:
       let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
       wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, Some Float, pattern_node))
     }
+  | LPAREN IDENT AS name = IDENT COLON EQUAL func = MOD_IDENT RPAREN
   | LPAREN IDENT AS name = IDENT COLON EQUAL func = IDENT RPAREN {
       let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
@@ -222,6 +223,7 @@ basic_atom:
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some Float, $2))
     }
+  | LPAREN pattern AS name = IDENT COLON EQUAL func = MOD_IDENT RPAREN
   | LPAREN pattern AS name = IDENT COLON EQUAL func = IDENT RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func func), $2))
