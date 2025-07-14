@@ -18,7 +18,7 @@ let predefined_classes = [
   ("cntrl", {|[[:cntrl:]]|});
   ("xdigit", {|[[:xdigit:]]|});
   ("space", {|[[:space:]]|});
-  ("word", {|[[:word:]]|});
+  (* ("word", {|[[:word:]]|}); *)
   ("eos", {|$|});
   ("eol", {|$|[\n]|});
   ("bnd", {|\b|});
@@ -82,8 +82,10 @@ rule token = parse
   | ':' { COLON }
   | '=' { EQUAL }
   | "as" { AS }
+  | ">>>" { PIPE }
   | "int" { INT_CONVERTER }
   | "float" { FLOAT_CONVERTER }
+  | "$" { PREDEFINED_CLASS "$" }
   | digit+ as n { INT (int_of_string n) }
   | module_ident as id { MOD_IDENT id }
   | ident as id {
@@ -97,6 +99,10 @@ rule token = parse
   | _ as c { raise (Error ("Unexpected character: " ^ String.make 1 c)) }
 
 and char_literal buf = parse
+  | '\\' '\\' {
+      Buffer.add_string buf "\\\\";
+      char_literal buf lexbuf
+    }
   | '\\' (_ as c) { 
       Buffer.add_char buf (escape_char c);
       char_literal buf lexbuf
