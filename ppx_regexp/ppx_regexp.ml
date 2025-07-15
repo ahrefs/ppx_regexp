@@ -18,9 +18,10 @@ open Ppxlib
 open Ast_builder.Default
 
 let transformation ctx =
-  object
+  object (self)
     inherit [value_binding list] Ast_traverse.fold_map as super
 
+    (* Replace the entire method! structure_item in ast_builder.ml with this: *)
     method! structure_item item acc =
       match item.pstr_desc with
       (* let%mik/%pcre x = {|some regex|}*)
@@ -30,55 +31,51 @@ let transformation ctx =
         let bindings = Transformations.transform_let ~mode ~ctx vbs in
         let new_item = { item with pstr_desc = Pstr_value (rec_flag, bindings) } in
         new_item, acc
-      (* let x = {%mik|some regex|} or {%pcre|some regex|}*)
+      (* let x = expression (which might contain %mik/%pcre) *)
       | Pstr_value (rec_flag, vbs) ->
-        let has_ppx_extensions =
-          List.exists
-            begin
-              fun vb ->
-                match vb.pvb_expr.pexp_desc with Pexp_extension ({ txt = "pcre" | "mik"; _ }, _) -> true | _ -> false
-            end
-            vbs
+        let processed_vbs, collected_bindings =
+          List.fold_left
+            (fun (vbs_acc, bindings_acc) vb ->
+              match vb.pvb_expr.pexp_desc with
+              | Pexp_extension ({ txt = ("pcre" | "mik") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (expr, _); _ } ])
+                when match expr.pexp_desc with Pexp_constant (Pconst_string _) -> true | _ -> false ->
+                let mode = if ext = "pcre" then `Pcre else `Mik in
+                let new_vb = { vb with pvb_expr = expr } in
+                let transformed = Transformations.transform_let ~mode ~ctx [ new_vb ] in
+                List.hd transformed :: vbs_acc, bindings_acc
+              | _ ->
+                let new_expr, new_bindings = self#expression vb.pvb_expr bindings_acc in
+                let new_vb = { vb with pvb_expr = new_expr } in
+                new_vb :: vbs_acc, new_bindings)
+            ([], acc) vbs
         in
-
-        if has_ppx_extensions then begin
-          let bindings =
-            List.map
-              begin
-                fun vb ->
-                  match vb.pvb_expr.pexp_desc with
-                  | Pexp_extension
-                      ({ txt = ("pcre" | "mik") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (expr, _); _ } ]) ->
-                    let mode = if ext = "pcre" then `Pcre else `Mik in
-                    let new_vb = { vb with pvb_expr = expr } in
-                    let transformed = Transformations.transform_let ~mode ~ctx [ new_vb ] in
-                    List.hd transformed
-                  | _ -> vb
-              end
-              vbs
-          in
-          let new_item = { item with pstr_desc = Pstr_value (rec_flag, bindings) } in
-          new_item, acc
-        end
-        else super#structure_item item acc
+        let new_item = { item with pstr_desc = Pstr_value (rec_flag, List.rev processed_vbs) } in
+        new_item, collected_bindings
       | _ -> super#structure_item item acc
 
     method! expression e_ext acc =
       let e_ext, acc = super#expression e_ext acc in
       let make_transformations ~mode ~opts ~loc = function
+        | Pexp_function cases ->
+          let cases, bindings = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
+          [%expr fun _ppx_regexp_v -> [%e cases]], bindings @ acc
         | Pexp_match (e, cases) ->
           let cases, bindings = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
           ( [%expr
               let _ppx_regexp_v = [%e e] in
               [%e cases]],
             bindings @ acc )
-        | Pexp_function cases ->
-          let cases, bindings = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
-          [%expr fun _ppx_regexp_v -> [%e cases]], bindings @ acc
         | _ ->
           Util.error ~loc "[%%pcre] and [%%mik] only apply to match, function and global let declarations of strings."
       in
       match e_ext.pexp_desc with
+      (* match%mik/match%pcre and function%mik/function%pcre*)
+      | Pexp_extension
+          ({ txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
+        let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
+        let opts = if String.ends_with ~suffix:"_i" ext then [ `Caseless ] else [] in
+        let loc = e.pexp_loc in
+        make_transformations ~mode ~opts ~loc e.pexp_desc
       (* match smth with | {%mik|some regex|} -> ...*)
       | Pexp_match (matched_expr, cases) ->
         let has_mik_case =
@@ -86,17 +83,15 @@ let transformation ctx =
             (fun case -> match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "mik"; _ }, _) -> true | _ -> false)
             cases
         in
-        if has_mik_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx matched_expr cases acc
+        if has_mik_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx ~matched_expr cases acc
         else e_ext, acc
-      (* match%mik/match%pcre and function%mik/function%pcre*)
-      | Pexp_extension ({ txt = ("pcre" | "mik") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
-        let mode = if ext = "pcre" then `Pcre else `Mik in
-        let loc = e.pexp_loc in
-        make_transformations ~mode ~opts:[] ~loc e.pexp_desc
-      | Pexp_extension ({ txt = ("pcre_i" | "mik_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
-        let mode = if ext = "pcre" then `Pcre else `Mik in
-        let loc = e.pexp_loc in
-        make_transformations ~mode ~opts:[ `Caseless ] ~loc e.pexp_desc
+      | Pexp_function cases ->
+        let has_mik_case =
+          List.exists
+            (fun case -> match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "mik"; _ }, _) -> true | _ -> false)
+            cases
+        in
+        if has_mik_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx cases acc else e_ext, acc
       | _ -> e_ext, acc
   end
 

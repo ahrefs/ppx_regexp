@@ -143,7 +143,6 @@ let extract_bindings ~(parser : ?pos:position -> string -> string Regexp_types.t
   let r = parser ~pos s in
   let nG, bs = Regexp.bindings r in
   let re_str = Regexp.to_string ~ctx r in
-  Format.printf "RE: %s@." re_str;
   let loc = Location.none in
   estring ~loc re_str, bs, nG
 
@@ -213,81 +212,65 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
           re, nG, bs, case.pc_rhs, case.pc_guard
       end
   in
-
   let cases, default_cases = separate_defaults [] cases in
-
   let default_rhs = make_default_rhs ~loc default_cases in
-  let grouped_cases = group_by_guard cases in
 
-  let compiled_groups =
-    List.map
-      begin
-        fun (guard, group_cases) ->
-          let processed_cases = List.rev_map aux group_cases in
-          let res = pexp_array ~loc @@ List.map (fun (re, _, _, _, _) -> re) processed_cases in
+  let processed_cases = List.rev_map aux cases in
+  let res = pexp_array ~loc @@ List.map (fun (re, _, _, _, _) -> re) processed_cases in
 
-          let opts_expr =
-            let rec opts_to_expr = function
-              | [] -> [%expr []]
-              | `Caseless :: rest -> [%expr `Caseless :: [%e opts_to_expr rest]]
-              | _ -> assert false
-            in
-            opts_to_expr opts
-          in
-          let comp =
-            [%expr
-              let a = Array.map (fun s -> Re.mark (Re.Perl.re ~opts:[%e opts_expr] s)) [%e res] in
-              let marks = Array.map fst a in
-              let re = Re.compile (Re.alt (Array.to_list (Array.map snd a))) in
-              re, marks]
-          in
-          let var = Util.fresh_var () in
-          let re_binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = var; loc }) ~expr:comp in
-          let e_comp = pexp_ident ~loc { txt = Lident var; loc } in
-
-          let rec handle_cases i offG = function
-            | [] -> [%expr assert false]
-            | (_, nG, bs, rhs, _) :: cases ->
-              let bs = List.rev bs in
-              [%expr
-                if Re.Mark.test _g (snd [%e e_comp]).([%e eint ~loc i]) then
-                  [%e wrap_group_bindings ~captured_acc:[] ~loc rhs offG bs]
-                else [%e handle_cases (i + 1) (offG + nG) cases]]
-          in
-
-          let match_expr =
-            [%expr
-              match Re.exec_opt (fst [%e e_comp]) _ppx_regexp_v with
-              | None -> None
-              | Some _g -> Some [%e handle_cases 0 0 processed_cases]]
-          in
-
-          guard, match_expr, re_binding
-      end
-      grouped_cases
+  let opts_expr =
+    let rec opts_to_expr = function
+      | [] -> [%expr []]
+      | `Caseless :: rest -> [%expr `Caseless :: [%e opts_to_expr rest]]
+      | _ -> assert false
+    in
+    opts_to_expr opts
   in
 
-  let rec try_groups = function
+  let comp =
+    [%expr
+      let a = Array.map (fun s -> Re.mark (Re.Perl.re ~opts:[%e opts_expr] s)) [%e res] in
+      let marks = Array.map fst a in
+      let re = Re.compile (Re.alt (Array.to_list (Array.map snd a))) in
+      re, marks]
+  in
+
+  let var = Util.fresh_var () in
+  let re_binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = var; loc }) ~expr:comp in
+  let e_comp = pexp_ident ~loc { txt = Lident var; loc } in
+
+  let rec handle_cases i offG = function
     | [] -> default_rhs
-    | (None, match_expr, _) :: rest ->
-      [%expr match [%e match_expr] with Some result -> result | None -> [%e try_groups rest]]
-    | (Some guard_expr, match_expr, _) :: rest ->
+    | (_, nG, bs, rhs, guard) :: cases ->
+      let bs = List.rev bs in
+      let handled_cases = handle_cases (i + 1) (offG + nG) cases in
       [%expr
-        if [%e guard_expr] then (match [%e match_expr] with Some result -> result | None -> [%e try_groups rest])
-        else [%e try_groups rest]]
+        if Re.Mark.test _g (snd [%e e_comp]).([%e eint ~loc i]) then
+          [%e
+            let wrapped_with_guard =
+              match guard with
+              | None -> rhs
+              | Some guard_expr -> [%expr if [%e guard_expr] then [%e rhs] else [%e handled_cases]]
+            in
+            wrap_group_bindings ~captured_acc:[] ~loc wrapped_with_guard offG bs]
+        else [%e handled_cases]]
   in
 
-  let final_expr = try_groups compiled_groups in
-  let all_bindings = List.map (fun (_, _, b) -> b) compiled_groups in
+  let match_expr =
+    [%expr
+      match Re.exec_opt (fst [%e e_comp]) _ppx_regexp_v with
+      | None -> [%e default_rhs]
+      | Some _g -> [%e handle_cases 0 0 processed_cases]]
+  in
 
   ( [%expr
       let _ppx_regexp_v = [%e pexp_ident ~loc { txt = Lident "_ppx_regexp_v"; loc }] in
-      [%e final_expr]],
-    all_bindings )
+      [%e match_expr]],
+    [ re_binding ] )
 
 (* processes each case individually instead of combining them into one RE *)
-let transform_mixed_match ~loc ~ctx matched_expr cases acc =
-  let prepare_case case =
+let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
+  let aux case =
     match case.pc_lhs.ppat_desc with
     | Ppat_extension
         ( { txt = "mik"; _ },
@@ -300,23 +283,26 @@ let transform_mixed_match ~loc ~ctx matched_expr cases acc =
     | _ -> `Regular case
   in
 
-  let prepared_cases = List.map prepare_case cases in
+  let prepared_cases = List.map aux cases in
 
-  (* Check if there are any mik cases *)
   let has_mik = List.exists (function `Mik _ -> true | _ -> false) prepared_cases in
 
-  if not has_mik then pexp_match ~loc matched_expr cases, acc
+  if not has_mik then begin
+    match matched_expr with None -> pexp_function ~loc cases, acc | Some m -> pexp_match ~loc m cases, acc
+  end
   else begin
     let mik_compilations =
       List.mapi
-        (fun i case ->
-          match case with
-          | `Mik (re, _, _, _, _) ->
-            let comp_var = Util.fresh_var () in
-            let comp_expr = [%expr Re.compile (Re.Perl.re [%e re])] in
-            let binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = comp_var; loc }) ~expr:comp_expr in
-            Some (i, comp_var, binding)
-          | _ -> None)
+        begin
+          fun i case ->
+            match case with
+            | `Mik (re, _, _, _, _) ->
+              let comp_var = Util.fresh_var () in
+              let comp_expr = [%expr Re.compile (Re.Perl.re [%e re])] in
+              let binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = comp_var; loc }) ~expr:comp_expr in
+              Some (i, comp_var, binding)
+            | _ -> None
+        end
         prepared_cases
       |> List.filter_map (fun x -> x)
     in
@@ -340,11 +326,14 @@ let transform_mixed_match ~loc ~ctx matched_expr cases acc =
           | Some _g ->
             [%e
               let bs = List.rev bs in
-              let body = wrap_group_bindings ~captured_acc:[] ~loc rhs 0 bs in
+              (* let body = wrap_group_bindings ~captured_acc:[] ~loc rhs 0 bs in *)
               match guard with
-              | None -> body
+              | None -> wrap_group_bindings ~captured_acc:[] ~loc rhs 0 bs
               | Some g ->
-                [%expr if [%e g] then [%e body] else [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]]]
+                let guarded_rhs =
+                  [%expr if [%e g] then [%e rhs] else [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]]
+                in
+                wrap_group_bindings ~captured_acc:[] ~loc guarded_rhs 0 bs]
           | None -> [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]]
       | `Mik _ :: rest, _ ->
         (* shouldn't happen if indices are correct *)
@@ -354,15 +343,22 @@ let transform_mixed_match ~loc ~ctx matched_expr cases acc =
     let match_body = build_ordered_match [%expr _ppx_regexp_v] 0 prepared_cases mik_compilations in
 
     let match_expr =
-      List.fold_right
-        (fun binding expr ->
+      let init =
+        match matched_expr with
+        | None -> [%expr fun _ppx_regexp_v -> [%e match_body]]
+        | Some m ->
           [%expr
-            let [%p binding.pvb_pat] = [%e binding.pvb_expr] in
-            [%e expr]])
-        bindings
-        [%expr
-          let _ppx_regexp_v = [%e matched_expr] in
-          [%e match_body]]
+            let _ppx_regexp_v = [%e m] in
+            [%e match_body]]
+      in
+      List.fold_left
+        begin
+          fun expr binding ->
+            [%expr
+              let [%p binding.pvb_pat] = [%e binding.pvb_expr] in
+              [%e expr]]
+        end
+        init bindings
     in
 
     match_expr, bindings @ acc
