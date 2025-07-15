@@ -51,7 +51,12 @@ let escape_special = function
   | '$' -> {|\$|}
   | '|' -> {|\||}
   | c -> String.make 1 c
+
+let needs_escape = function
+  | '(' | ')' | '[' | ']' | '{' | '}' | '.' | '*' | '+' | '?' | '^' | '$' | '|' -> true
+  | _ -> false
 }
+
 
 let whitespace = [' ' '\t' '\r']
 let lowercase = ['a'-'z']
@@ -108,24 +113,12 @@ and char_literal buf = parse
       char_literal buf lexbuf
     }
   | '\'' { CHAR_LITERAL (Buffer.contents buf) }
-  | ('(' as c) | (')' as c) {
-       Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf
-     }
-  | ('{' as c) | ('}' as c) {
-       Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf
-     }
-  | ('[' as c) | (']' as c) {
-       Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf
-     }
-  | ('.' as c) | ('*' as c) | ('+' as c) | ('?' as c) | ('^' as c) | ('$' as c) | ('|' as c) {
-       Buffer.add_string buf (escape_special c);
-       char_literal buf lexbuf
-     }
   | _ as c {
-      Buffer.add_char buf c;
+      begin if needs_escape c then
+        Buffer.add_string buf (escape_special c)
+      else
+        Buffer.add_char buf c
+      end;
       char_literal buf lexbuf
     }
   | eof { raise (Error "Unterminated character literal") }
@@ -137,7 +130,11 @@ and string_literal buf = parse
     }
   | '"' { STRING_LITERAL (Buffer.contents buf) }
   | _ as c {
-      Buffer.add_char buf c;
+      begin if needs_escape c then
+        Buffer.add_string buf (escape_special c)
+      else
+        Buffer.add_char buf c
+      end;
       string_literal buf lexbuf
     }
   | eof { raise (Error "Unterminated string literal") }
