@@ -1,8 +1,6 @@
-[![Build Status][ci-build-status]][ci]
+# PPXes for Working with Regular Expressions
 
-# Two PPXes for Working with Regular Expressions
-
-This repo provides two PPXes providing regular expression-based routing:
+This repo provides PPXes providing regular expression-based routing:
 
 - `ppx_regexp_extended` maps to [re][] with the conventional last-match extraction
   into `string` and `string option`. Two syntaxes for regular expressions available:
@@ -62,35 +60,12 @@ string.
 
 ### `%mik`
 
-The syntax that this extension accepts is as follows:
+Full [%mik guide](./MIK.md)
 
-  -  `char-literal`: Match the given character (priority 0).
-  -  `_` (underscore): Match any character (priority 0).
-  -  `string-literal`: Match the given sequence of characters (priority 0).
-  -  `[set-of-characters]`: Character class, match one of the characters given by set-of-characters (priority 0). The grammar for set-of-characters is the following:
-      - `char-literal`−`char-literal`: defines a range of characters according to the iso-8859-1 encoding (includes ASCII).
-      - `char-literal`: defines a singleton (a set containing just this character).
-      - `string-literal`: defines a set that contains all the characters present in the given string.
-      - `lowercase-identifier`: is replaced by the corresponding predefined regular expression; this regular expression must be exactly of length 1 and therefore represents a set of characters.
-      - `set-of-characters`: set-of-characters defines the union of two sets of characters. 
-  -  `[^set-of-characters]`: Negative character class
-  -  `regexp *`: Match the pattern given by regexp 0 time or more (priority 0).
-  -  `regexp +`: Match the pattern given by regexp 1 time or more (priority 0).
-  -  `regexp ?`: Match the pattern given by regexp at most once (priority 0).
-  -  `regexp{m−n}`: Match regexp at least `m` times and up to `n` times. `m` and `n` must be integer literals (priority 0).
-  -  `regexp{n}`: Same as regexp{n−n} (priority 0).
-  -  `( regexp )`: Match regexp (priority 0).
-  -  `regexp regexp`: Match the first regular expressions and then the second one (priority 1).
-  -  `regexp | regexp`: Match one of these two regular expressions (priority 2).
-  -  `regexp as lowercase-identifier`: Give a name to the substring that will be matched by the given pattern. This string becomes available under this name (priority 3).
-     In-place conversions of the matched substring can be performed using one these three mechanisms:
-      - `regexp as lowercase-identifier : int`: `int` behaves as `int_of_string`
-      - `regexp as lowercase-identifier : float`: `float` behaves as `float_of_string`
-      - `regexp as lowercase-identifier := converter`: where `converter` is any function which converts a string into something else.
-
-In addition, the following predefined character classes are available:
-  - **POSIX character classes:** `lower`, `upper`, `alpha`, `digit`, `alnum`, `punct`, `graph`, `print`, `blank`, `space`, `cntrl`, `xdigit`, `word`
-  - **Control sequences:** `eos` (same as `$`), `eol` (end of string or newline), `bnd` (word boundary `\b`), `bos` (same as `^`), `any` (any character except newline)
+#### Quick Links
+- [Variable capture](./MIK.md#variable-capture)
+- [Type conversion](./MIK.md#type-conversion)
+- [Different extensions](./MIK.md#alternatives)
 
 ### Example
 

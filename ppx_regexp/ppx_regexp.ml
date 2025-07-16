@@ -25,8 +25,7 @@ let transformation ctx =
     method! structure_item item acc =
       match item.pstr_desc with
       (* let%mik/%pcre x = {|some regex|}*)
-      | Pstr_extension
-          (({ txt = ("pcre" | "mik") as ext; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
+      | Pstr_extension (({ txt = ("pcre" | "mik") as ext; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
         let mode = if ext = "pcre" then `Pcre else `Mik in
         let bindings = Transformations.transform_let ~mode ~ctx vbs in
         let new_item = { item with pstr_desc = Pstr_value (rec_flag, bindings) } in
@@ -65,33 +64,32 @@ let transformation ctx =
               let _ppx_regexp_v = [%e e] in
               [%e cases]],
             bindings @ acc )
-        | _ ->
-          Util.error ~loc "[%%pcre] and [%%mik] only apply to match, function and global let declarations of strings."
+        | _ -> Util.error ~loc "[%%pcre] and [%%mik] only apply to match, function and global let declarations of strings."
       in
       match e_ext.pexp_desc with
       (* match%mik/match%pcre and function%mik/function%pcre*)
-      | Pexp_extension
-          ({ txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
+      | Pexp_extension ({ txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
         let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
         let opts = if String.ends_with ~suffix:"_i" ext then [ `Caseless ] else [] in
         let loc = e.pexp_loc in
         make_transformations ~mode ~opts ~loc e.pexp_desc
       (* match smth with | {%mik|some regex|} -> ...*)
       | Pexp_match (matched_expr, cases) ->
-        let has_mik_case =
+        let has_ext_case =
           List.exists
-            (fun case -> match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "mik"; _ }, _) -> true | _ -> false)
+            (fun case ->
+              match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "pcre" | "mik" | "pcre_i" | "mik_i"; _ }, _) -> true | _ -> false)
             cases
         in
-        if has_mik_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx ~matched_expr cases acc
-        else e_ext, acc
+        if has_ext_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx ~matched_expr cases acc else e_ext, acc
       | Pexp_function cases ->
-        let has_mik_case =
+        let has_ext_case =
           List.exists
-            (fun case -> match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "mik"; _ }, _) -> true | _ -> false)
+            (fun case ->
+              match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "pcre" | "mik" | "pcre_i" | "mik_i"; _ }, _) -> true | _ -> false)
             cases
         in
-        if has_mik_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx cases acc else e_ext, acc
+        if has_ext_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx cases acc else e_ext, acc
       | _ -> e_ext, acc
   end
 

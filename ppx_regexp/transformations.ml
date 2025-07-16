@@ -318,12 +318,14 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
   let aux case =
     match case.pc_lhs.ppat_desc with
     | Ppat_extension
-        ({ txt = "mik"; _ }, PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ])
-      ->
+        ( { txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ },
+          PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
-      let parser = Regexp.parse_mik_exn ~target:`Match in
+      let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
+      let opts = if String.ends_with ~suffix:"_i" ext then [ `Caseless ] else [] in
+      let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Match | `Mik -> Regexp.parse_mik_exn ~target:`Match in
       let re, bs, nG = extract_bindings ~parser ~pos ~ctx pat in
-      `Mik (re, nG, bs, case.pc_rhs, case.pc_guard)
+      `Mik (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
     | _ -> `Regular case
   in
 
@@ -340,9 +342,12 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
         begin
           fun i case ->
             match case with
-            | `Mik (re, _, _, _, _) ->
+            | `Mik (opts, re, _, _, _, _) ->
               let comp_var = Util.fresh_var () in
-              let comp_expr = [%expr Re.compile (Re.Perl.re [%e re])] in
+              let opts_expr =
+                match opts with [] -> [%expr []] | [ `Caseless ] -> [%expr [ `Caseless ]] | _ -> failwith "Unknown option"
+              in
+              let comp_expr = [%expr Re.compile (Re.Perl.re ~opts:[%e opts_expr] [%e re])] in
               let binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = comp_var; loc }) ~expr:comp_expr in
               Some (i, comp_var, binding)
             | _ -> None
@@ -363,7 +368,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
           match [%e input_var] with
           | [%p case.pc_lhs] when [%e Option.value case.pc_guard ~default:[%expr true]] -> [%e case.pc_rhs]
           | _ -> [%e build_ordered_match input_var (case_idx + 1) rest mik_comps]]
-      | `Mik (_, _, bs, rhs, guard) :: rest, (idx, comp_var, _) :: rest_comps when idx = case_idx ->
+      | `Mik (_, _, _, bs, rhs, guard) :: rest, (idx, comp_var, _) :: rest_comps when idx = case_idx ->
         let comp_ident = pexp_ident ~loc { txt = Lident comp_var; loc } in
         [%expr
           match Re.exec_opt [%e comp_ident] [%e input_var] with
