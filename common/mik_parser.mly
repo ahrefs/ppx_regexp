@@ -42,7 +42,7 @@ let unclosed_error what startpos endpos =
 
 %token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS
 %token <int> INT
-%token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE
+%token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE EMPTY_STR
 %token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS PIPE
 %token INT_CONVERTER FLOAT_CONVERTER EOF
 
@@ -135,6 +135,9 @@ basic_atom:
     }
   | STRING_LITERAL {
       to_pcre_regex $1 $startpos $endpos
+    }
+  | EMPTY_STR {
+      to_pcre_regex "^$" $startpos $endpos
     }
   | UNDERSCORE {
       to_pcre_regex "." $startpos $endpos

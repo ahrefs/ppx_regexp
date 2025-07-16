@@ -99,6 +99,7 @@ rule token = parse
       | None -> IDENT id
     }
   | '\'' { char_literal (Buffer.create 16) lexbuf }
+  | "\"\"" { EMPTY_STR }
   | '"' { string_literal (Buffer.create 16) lexbuf }
   | eof { EOF }
   | _ as c { raise (Error ("Unexpected character: " ^ String.make 1 c)) }
