@@ -67,26 +67,42 @@ let transformation ctx =
         | _ -> Util.error ~loc "[%%pcre] and [%%mik] only apply to match, function and global let declarations of strings."
       in
       match e_ext.pexp_desc with
-      (* match%mik/match%pcre and function%mik/function%pcre*)
+      (* match%mik/match%pcre and function%mik/function%pcre, anchored *)
       | Pexp_extension ({ txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
         let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
-        let opts = if String.ends_with ~suffix:"_i" ext then [ `Caseless ] else [] in
+        let opts =
+          if String.ends_with ~suffix:"_i" ext then `Caseless :: `Anchored :: Util.default_opts else `Anchored :: Util.default_opts
+        in
+        let loc = e.pexp_loc in
+        make_transformations ~mode ~opts ~loc e.pexp_desc
+      (* match%miks/match%pcres and function%miks/function%pcres, non anchored (search) *)
+      | Pexp_extension ({ txt = ("pcres" | "miks" | "pcres_i" | "miks_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
+        let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
+        let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: Util.default_opts else Util.default_opts in
         let loc = e.pexp_loc in
         make_transformations ~mode ~opts ~loc e.pexp_desc
       (* match smth with | {%mik|some regex|} -> ...*)
       | Pexp_match (matched_expr, cases) ->
         let has_ext_case =
           List.exists
-            (fun case ->
-              match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "pcre" | "mik" | "pcre_i" | "mik_i"; _ }, _) -> true | _ -> false)
+            begin
+              fun case ->
+                match case.pc_lhs.ppat_desc with
+                | Ppat_extension ({ txt = "pcre" | "pcres" | "mik" | "miks" | "pcre_i" | "pcres_i" | "mik_i" | "miks_i"; _ }, _) -> true
+                | _ -> false
+            end
             cases
         in
         if has_ext_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx ~matched_expr cases acc else e_ext, acc
       | Pexp_function cases ->
         let has_ext_case =
           List.exists
-            (fun case ->
-              match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "pcre" | "mik" | "pcre_i" | "mik_i"; _ }, _) -> true | _ -> false)
+            begin
+              fun case ->
+                match case.pc_lhs.ppat_desc with
+                | Ppat_extension ({ txt = "pcre" | "pcres" | "mik" | "miks" | "pcre_i" | "pcres_i" | "mik_i" | "miks_i"; _ }, _) -> true
+                | _ -> false
+            end
             cases
         in
         if has_ext_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~ctx cases acc else e_ext, acc

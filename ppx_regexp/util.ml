@@ -1,6 +1,7 @@
 open Ppxlib
 open Ast_builder.Default
 
+let default_opts = [ `Dollar_endonly ]
 let error = Location.raise_errorf
 
 let warn ~loc msg e =
@@ -72,6 +73,13 @@ let check_unbounded_recursion ~mode var_name content =
     let n_as_conv = Printf.sprintf {|\(\b%s\b as [^)]*:[^)]*\)|} var_name in
     contains_regex u content || contains_regex n_as content || contains_regex n_as_conv content
 
+let pp_conv = function
+  | None -> "NONE"
+  | Some Regexp_types.Int -> "INT"
+  | Some Regexp_types.Float -> "FLOAT"
+  | Some (Regexp_types.Func func_name) -> Format.sprintf "FUNC_NAME: %s." func_name
+  | Some (Regexp_types.Pipe_all_func func_name) -> Format.sprintf "PIPE_FUNC_NAME: %s" func_name
+
 (* debugging *)
 let rec debug_re indent (ast : string Regexp_types.t) =
   let spaces = String.make indent ' ' in
@@ -97,14 +105,13 @@ let rec debug_re indent (ast : string Regexp_types.t) =
     Printf.printf "%sCapture(\n" spaces;
     debug_re (indent + 2) expr;
     Printf.printf "%s)\n" spaces
-  | Capture_as (name, _, expr) ->
-    Printf.printf "%sCapture_as(%s,\n" spaces name.txt;
+  | Capture_as (name, conv, expr) ->
+    Printf.printf "%sCapture_as(%s, %s,\n" spaces (pp_conv conv) name.txt;
     debug_re (indent + 2) expr;
     Printf.printf "%s)\n" spaces
-  | Named_subs (name, alias, _, expr) ->
-    Printf.printf "%sNamed_subs(%s, %s,\n" spaces name.txt (match alias with Some a -> a.txt | None -> "None");
+  | Named_subs (name, alias, conv, expr) ->
+    Printf.printf "%sNamed_subs(%s, %s, %s,\n" spaces name.txt (pp_conv conv) (match alias with Some a -> a.txt | None -> "None");
     debug_re (indent + 2) expr;
     Printf.printf "%s)\n" spaces
-  | Call longident ->
-    Printf.printf "%sCall(%s)\n" spaces (match longident.txt with Longident.Lident s -> s | _ -> "complex")
+  | Call longident -> Printf.printf "%sCall(%s)\n" spaces (match longident.txt with Longident.Lident s -> s | _ -> "complex")
   | _ -> Printf.printf "%sOther\n" spaces

@@ -96,7 +96,7 @@ Values are also available at the guard level:
 let%mik num = {| digit+ |}
 
 let do_something = function%mik
-  | {|/ ... (num as n) ... /|} when n = 123 -> ...
+  | {|/ ... (num as n) ... /|} when n = "123" -> ...
   | _ -> ...
 ```
 
@@ -107,7 +107,7 @@ It is possible to convert variables to `int` of `float` on the fly:
 let%mik num = {| digit+ |}
 
 let do_something = function%mik
-  | {|/ 'd' (num as n : int) ... /|} -> ... (* (n : int) available here *)
+  | {|/ 'd' (num as n : int) ... /|} when n = 123 -> ... (* (n : int) available here *)
   | {|/ 'f' (num as n : float) ... /|} -> ... (* (n : float) available here *)
   | _ -> ...
 ```
@@ -175,6 +175,33 @@ function%mik
 This match expression will compile all of the REs in the branches into one, and use marks to find which branch was executed.  
 Efficient if you have multiple branches.
 
+#### `match%miks` and `function%miks` (search, not anchored)
+
+The previous extension was **anchored**, meaning, it will only match at the beginning of the string.
+
+This version is not, meaning, for example:
+
+```ocaml
+let mik_test = function%mik
+  | {|/ (digit+ as num) /|} -> ...
+  ...
+  | _ -> failwith "no match"
+
+let () = mik_test "123" ...     (* match *)
+let () = mik_test "test123" ... (* ERROR: no match *)
+
+(* but, with %miks... *)
+let miks_test = function%miks
+  | {|/ (digit+ as num) /|} -> ...
+  ...
+  | _ -> failwith "no match"
+
+let () = miks_test "123" ...     (* match *)
+let () = miks_test "test123" ... (* match *)
+```
+
+Similar for `%miks_i`, except it is case insensitive.
+
 #### General match/function
 
 ```ocaml
@@ -183,11 +210,17 @@ function
   | {%mik|/ some regex /|} -> ...
   ...
   | "another string" -> ...
+  | {%miks|/ some regex /|} -> ... (* non-anchored *)
+  ...
+  | "yet another string" -> ...
   | {%mik_i|/ another regex /|} -> ... (* case insensitive *)
+  ...
+  | "would you guess it" -> ...
+  | {%miks_i|/ another regex /|} -> ... (* non-anchored, case insensitive *)
   | _ -> ...
 ```
 
 This match expression will compile all of the REs **individually**, and test each one in sequence.  
 Recommended if you only matching one RE. It is less efficient than the first option for more than one RE, but allows raw string matching.
 
-It keeps all of the features of the previous extension, explored in [Semantics](#Semantics_and_Examples)
+It keeps all of the features (guards and such) of the previous extension, explored in [Semantics](#Semantics_and_Examples)

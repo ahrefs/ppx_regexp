@@ -26,7 +26,7 @@ module Regexp = struct
           nG', ((res, None, Some (Pipe_all_func func), must_match) :: inner_bs) @ bs
       | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mik."
     in
-    function { Location.txt = Capture_as (idr, _, e); _ } -> recurse true e (0, [ idr, None, None, true ]) | e -> recurse true e (0, [])
+    function { Location.txt = Capture_as (idr, conv, e); _ } -> recurse true e (0, [ idr, None, conv, true ]) | e -> recurse true e (0, [])
 
   let to_string ~ctx =
     let p_alt, p_seq, p_suffix, p_atom = 0, 1, 2, 3 in
@@ -128,6 +128,12 @@ let rec separate_defaults acc = function
   | ({ pc_lhs = { ppat_desc = Ppat_any; _ }; _ } as case) :: rest -> acc, case :: rest
   | ({ pc_lhs = { ppat_desc = Ppat_var _; _ }; _ } as case) :: rest -> acc, case :: rest
   | case :: rest -> separate_defaults (case :: acc) rest
+
+let rec create_opts ~loc = function
+  | [] -> [%expr []]
+  | `Caseless :: xs -> [%expr `Caseless :: [%e create_opts ~loc xs]]
+  | `Anchored :: xs -> [%expr `Anchored :: [%e create_opts ~loc xs]]
+  | `Dollar_endonly :: xs -> [%expr `Dollar_endonly :: [%e create_opts ~loc xs]]
 
 let extract_bindings ~(parser : ?pos:position -> string -> string Regexp_types.t) ~ctx ~pos s =
   let r = parser ~pos s in
@@ -241,7 +247,7 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
 
   let res = pexp_array ~loc @@ List.map (fun (re, _, _) -> re) processed_cases in
 
-  let opts_expr = match opts with [] -> [%expr []] | [ `Caseless ] -> [%expr [ `Caseless ]] | _ -> failwith "Unknown option" in
+  let opts_expr = create_opts ~loc opts in
 
   let comp =
     [%expr
@@ -319,10 +325,23 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
     match case.pc_lhs.ppat_desc with
     | Ppat_extension
         ( { txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ },
+          (* anchored *)
           PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
       let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
-      let opts = if String.ends_with ~suffix:"_i" ext then [ `Caseless ] else [] in
+      let opts =
+        if String.ends_with ~suffix:"_i" ext then `Caseless :: `Anchored :: Util.default_opts else `Anchored :: Util.default_opts
+      in
+      let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Match | `Mik -> Regexp.parse_mik_exn ~target:`Match in
+      let re, bs, nG = extract_bindings ~parser ~pos ~ctx pat in
+      `Mik (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
+    | Ppat_extension
+        ( { txt = ("pcres" | "miks" | "pcres_i" | "miks_i") as ext; _ },
+          (* search, non anchored *)
+          PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
+      let pos = str_loc.loc_start in
+      let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
+      let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: Util.default_opts else Util.default_opts in
       let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Match | `Mik -> Regexp.parse_mik_exn ~target:`Match in
       let re, bs, nG = extract_bindings ~parser ~pos ~ctx pat in
       `Mik (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
@@ -344,9 +363,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
             match case with
             | `Mik (opts, re, _, _, _, _) ->
               let comp_var = Util.fresh_var () in
-              let opts_expr =
-                match opts with [] -> [%expr []] | [ `Caseless ] -> [%expr [ `Caseless ]] | _ -> failwith "Unknown option"
-              in
+              let opts_expr = create_opts ~loc opts in
               let comp_expr = [%expr Re.compile (Re.Perl.re ~opts:[%e opts_expr] [%e re])] in
               let binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = comp_var; loc }) ~expr:comp_expr in
               Some (i, comp_var, binding)
