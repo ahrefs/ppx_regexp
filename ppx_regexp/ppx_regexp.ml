@@ -25,7 +25,7 @@ let transformation ctx =
     method! structure_item item acc =
       match item.pstr_desc with
       (* let%mik/%pcre x = {|some regex|}*)
-      | Pstr_extension (({ txt = ("pcre" | "mik") as ext; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
+      | Pstr_extension (({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
         let mode = if ext = "pcre" then `Pcre else `Mik in
         let bindings = Transformations.transform_let ~mode ~ctx vbs in
         let new_item = { item with pstr_desc = Pstr_value (rec_flag, bindings) } in
@@ -36,7 +36,7 @@ let transformation ctx =
           List.fold_left
             (fun (vbs_acc, bindings_acc) vb ->
               match vb.pvb_expr.pexp_desc with
-              | Pexp_extension ({ txt = ("pcre" | "mik") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (expr, _); _ } ])
+              | Pexp_extension ({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (expr, _); _ } ])
                 when match expr.pexp_desc with Pexp_constant (Pconst_string _) -> true | _ -> false ->
                 let mode = if ext = "pcre" then `Pcre else `Mik in
                 let new_vb = { vb with pvb_expr = expr } in
@@ -68,7 +68,8 @@ let transformation ctx =
       in
       match e_ext.pexp_desc with
       (* match%mik/match%pcre and function%mik/function%pcre, anchored *)
-      | Pexp_extension ({ txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
+      | Pexp_extension ({ txt = ("pcre" | "mikmatch" | "pcre_i" | "mikmatch_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ])
+        ->
         let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
         let opts =
           if String.ends_with ~suffix:"_i" ext then `Caseless :: `Anchored :: Util.default_opts else `Anchored :: Util.default_opts
@@ -76,7 +77,8 @@ let transformation ctx =
         let loc = e.pexp_loc in
         make_transformations ~mode ~opts ~loc e.pexp_desc
       (* match%miks/match%pcres and function%miks/function%pcres, non anchored (search) *)
-      | Pexp_extension ({ txt = ("pcres" | "miks" | "pcres_i" | "miks_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
+      | Pexp_extension
+          ({ txt = ("pcres" | "miksearch" | "pcres_i" | "miksearch_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
         let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
         let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: Util.default_opts else Util.default_opts in
         let loc = e.pexp_loc in
@@ -88,7 +90,9 @@ let transformation ctx =
             begin
               fun case ->
                 match case.pc_lhs.ppat_desc with
-                | Ppat_extension ({ txt = "pcre" | "pcres" | "mik" | "miks" | "pcre_i" | "pcres_i" | "mik_i" | "miks_i"; _ }, _) -> true
+                | Ppat_extension
+                    ({ txt = "pcre" | "pcres" | "mikmatch" | "miksearch" | "pcre_i" | "pcres_i" | "mikmatch_i" | "miksearch_i"; _ }, _) ->
+                  true
                 | _ -> false
             end
             cases
@@ -100,7 +104,9 @@ let transformation ctx =
             begin
               fun case ->
                 match case.pc_lhs.ppat_desc with
-                | Ppat_extension ({ txt = "pcre" | "pcres" | "mik" | "miks" | "pcre_i" | "pcres_i" | "mik_i" | "miks_i"; _ }, _) -> true
+                | Ppat_extension
+                    ({ txt = "pcre" | "pcres" | "mikmatch" | "miksearch" | "pcre_i" | "pcres_i" | "mikmatch_i" | "miksearch_i"; _ }, _) ->
+                  true
                 | _ -> false
             end
             cases

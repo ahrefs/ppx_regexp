@@ -42,8 +42,8 @@ matched substring available in the right-hand side of match cases
 - (?U<var>) marks groups whose substrings are not needed in the right-hand side
 - let%pcre name = {|re|} defines reusable patterns for use within (?U/N<name>) patterns
 - match%pcre_i provides case-insensitive matching
-- match%mik supports mikmatch-style syntax with typed captures and pattern
-composition, along with let%mik for defining reusable patterns
-- match%mik_i provides case-insensitive mikmatch-style matching
+- match%mikmatch supports mikmatch-style syntax with typed captures and pattern
+composition, along with let%mikmatch for defining reusable patterns
+- match%mikmatch_i provides case-insensitive mikmatch-style matching
 - Matching guards are supported across all match extensions
 """

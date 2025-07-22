@@ -29,7 +29,7 @@ It also accepts:
 ```ocaml
 let%pcre var = {| some regex |}
 (* and *)
-let%mik var = {| some regex |}
+let%mikmatch var = {| some regex |}
 ```
 
 ### `%pcre`
@@ -58,9 +58,9 @@ The patterns are plain strings of the form accepted by `Re.Pcre`, with the follo
 A variable is allowed for the universal case and is bound to the matched
 string.
 
-### `%mik`
+### `%mikmatch`
 
-Full [%mik guide](./MIK.md)
+Full [%mikmatch guide](./MIK.md)
 
 #### Quick Links
 - [Variable capture](./MIK.md#variable-capture)
@@ -92,7 +92,7 @@ let () = Lwt_main.run begin
 end
 ```
 
-#### `%mik`
+#### `%mikmatch`
 ```ocaml
 (* Link with re, re.pcre, lwt, lwt.unix.
    Preprocess with ppx_regexp_extended.
@@ -100,10 +100,10 @@ end
 
 open Lwt.Infix
 
-let%mik host = {| [a-z0-9.-]+ |}
+let%mikmatch host = {| [a-z0-9.-]+ |}
 
 let check_line =
-  (function%mik
+  (function%mikmatch
    | {|/ (any* ':' digit digit as t) ' ' (any*) ' ' "postfix/smtpd" '[' digit+ ']' ": connect from " (host) /|} ->
       Lwt_io.printlf "%s %s" t host
    | _ ->
