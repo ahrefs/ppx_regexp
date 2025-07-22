@@ -58,9 +58,9 @@ The patterns are plain strings of the form accepted by `Re.Pcre`, with the follo
 A variable is allowed for the universal case and is bound to the matched
 string.
 
-### `%mik`
+### `%mikmatch`
 
-Full [%mik guide](./MIK.md)
+Full [%mikmatch guide](./MIK.md)
 
 #### Quick Links
 - [Variable capture](./MIK.md#variable-capture)

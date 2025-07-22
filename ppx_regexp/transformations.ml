@@ -324,7 +324,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
   let aux case =
     match case.pc_lhs.ppat_desc with
     | Ppat_extension
-        ( { txt = ("pcre" | "mik" | "pcre_i" | "mik_i") as ext; _ },
+        ( { txt = ("pcre" | "mikmatch" | "pcre_i" | "mikmatch_i") as ext; _ },
           (* anchored *)
           PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
@@ -336,7 +336,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
       let re, bs, nG = extract_bindings ~parser ~pos ~ctx pat in
       `Mik (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
     | Ppat_extension
-        ( { txt = ("pcres" | "miks" | "pcres_i" | "miks_i") as ext; _ },
+        ( { txt = ("pcres" | "miksearch" | "pcres_i" | "miksearch_i") as ext; _ },
           (* search, non anchored *)
           PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
