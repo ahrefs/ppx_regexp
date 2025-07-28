@@ -64,7 +64,7 @@ module Regexp = struct
         "(" ^ recurse p_alt content ^ ")"
       | Unnamed_subs (idr, _) ->
         let content = get_parsed idr in
-        recurse p_alt content
+        recurse p_atom content
       | Pipe_all (_, _, e) -> recurse p_alt e
       | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mik."
     in
