@@ -268,3 +268,9 @@ char_set_item:
   | INT { $1 }
   | PREDEFINED_CLASS { $1 }
   | IDENT { $1 }
+  | IDENT DASH IDENT {
+      if String.length $1 = 1 && String.length $3 = 1 then
+        $1 ^ "-" ^ $3
+      else
+        syntax_error "ranges must be single characters" $startpos($2) $endpos
+    }
