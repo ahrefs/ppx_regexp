@@ -40,8 +40,7 @@ let unclosed_error what startpos endpos =
   syntax_error (Printf.sprintf "Unclosed %s" what) startpos endpos
 %}
 
-%token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS
-%token <int> INT
+%token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS INT
 %token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE EMPTY_STR
 %token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS PIPE
 %token INT_CONVERTER FLOAT_CONVERTER EOF
@@ -108,15 +107,16 @@ atom_expr:
       wrap_loc $startpos $endpos (Opt $1)
     }
   | basic_atom LBRACE n = INT RBRACE {
+      let n = int_of_string n in
       let repeat_loc = wrap_loc $startpos($2) $endpos($4) (n, Some n) in
       wrap_loc $startpos $endpos (Repeat (repeat_loc, $1))
     }
   | basic_atom LBRACE min = INT DASH max = INT RBRACE {
-      let repeat_loc = wrap_loc $startpos($2) $endpos($6) (min, Some max) in
+      let repeat_loc = wrap_loc $startpos($2) $endpos($6) (int_of_string min, Some (int_of_string max)) in
       wrap_loc $startpos $endpos (Repeat (repeat_loc, $1))
     }
   | basic_atom LBRACE min = INT DASH RBRACE {
-      let repeat_loc = wrap_loc $startpos($2) $endpos($5) (min, None) in
+      let repeat_loc = wrap_loc $startpos($2) $endpos($5) (int_of_string min, None) in
       wrap_loc $startpos $endpos (Repeat (repeat_loc, $1))
     }
   (* error cases for repetition *)
@@ -265,5 +265,6 @@ char_set_item:
   | CHAR_LITERAL DASH CHAR_LITERAL { $1 ^ "-" ^ $3 }
   | CHAR_LITERAL DASH { missing_error "character after '-' in range" $startpos($2) $endpos }
   | STRING_LITERAL { $1 }
+  | INT { $1 }
   | PREDEFINED_CLASS { $1 }
   | IDENT { $1 }

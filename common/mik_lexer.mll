@@ -91,7 +91,7 @@ rule token = parse
   | "int" { INT_CONVERTER }
   | "float" { FLOAT_CONVERTER }
   | "$" { PREDEFINED_CLASS "$" }
-  | digit+ as n { INT (int_of_string n) }
+  | digit+ as n { INT n }
   | module_ident as id { MOD_IDENT id }
   | ident as id {
       match List.assoc_opt id predefined_classes with
