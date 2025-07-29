@@ -133,7 +133,6 @@ let rec create_opts ~loc = function
   | [] -> [%expr []]
   | `Caseless :: xs -> [%expr `Caseless :: [%e create_opts ~loc xs]]
   | `Anchored :: xs -> [%expr `Anchored :: [%e create_opts ~loc xs]]
-  | `Dollar_endonly :: xs -> [%expr `Dollar_endonly :: [%e create_opts ~loc xs]]
 
 let extract_bindings ~(parser : ?pos:position -> string -> string Regexp_types.t) ~ctx ~pos s =
   let r = parser ~pos s in
@@ -328,29 +327,17 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
           (* anchored *)
           PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
-      let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
-      let opts =
-        if String.ends_with ~suffix:"_i" ext then `Caseless :: `Anchored :: Util.default_opts else `Anchored :: Util.default_opts
-      in
+      let mode, opts = if String.starts_with ~prefix:"pcre" ext then `Pcre, [] else `Mik, Util.mikmatch_default_opts in
+      let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: opts else opts in
       let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Match | `Mik -> Regexp.parse_mik_exn ~target:`Match in
       let re, bs, nG = extract_bindings ~parser ~pos ~ctx pat in
-      `Mik (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
-    | Ppat_extension
-        ( { txt = ("pcres" | "miksearch" | "pcres_i" | "miksearch_i") as ext; _ },
-          (* search, non anchored *)
-          PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
-      let pos = str_loc.loc_start in
-      let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
-      let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: Util.default_opts else Util.default_opts in
-      let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Match | `Mik -> Regexp.parse_mik_exn ~target:`Match in
-      let re, bs, nG = extract_bindings ~parser ~pos ~ctx pat in
-      `Mik (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
+      `Ext (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
     | _ -> `Regular case
   in
 
   let prepared_cases = List.map aux cases in
 
-  let has_mik = List.exists (function `Mik _ -> true | _ -> false) prepared_cases in
+  let has_mik = List.exists (function `Ext _ -> true | _ -> false) prepared_cases in
 
   if not has_mik then begin
     match matched_expr with None -> pexp_function ~loc cases, acc | Some m -> pexp_match ~loc m cases, acc
@@ -361,7 +348,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
         begin
           fun i case ->
             match case with
-            | `Mik (opts, re, _, _, _, _) ->
+            | `Ext (opts, re, _, _, _, _) ->
               let comp_var = Util.fresh_var () in
               let opts_expr = create_opts ~loc opts in
               let comp_expr = [%expr Re.compile (Re.Perl.re ~opts:[%e opts_expr] [%e re])] in
@@ -385,7 +372,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
           match [%e input_var] with
           | [%p case.pc_lhs] when [%e Option.value case.pc_guard ~default:[%expr true]] -> [%e case.pc_rhs]
           | _ -> [%e build_ordered_match input_var (case_idx + 1) rest mik_comps]]
-      | `Mik (_, _, _, bs, rhs, guard) :: rest, (idx, comp_var, _) :: rest_comps when idx = case_idx ->
+      | `Ext (_, _, _, bs, rhs, guard) :: rest, (idx, comp_var, _) :: rest_comps when idx = case_idx ->
         let comp_ident = pexp_ident ~loc { txt = Lident comp_var; loc } in
         [%expr
           match Re.exec_opt [%e comp_ident] [%e input_var] with
@@ -398,7 +385,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
                 let guarded_rhs = [%expr if [%e g] then [%e rhs] else [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]] in
                 wrap_group_bindings ~captured_acc:[] ~loc guarded_rhs 0 bs]
           | None -> [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]]
-      | `Mik _ :: rest, _ ->
+      | `Ext _ :: rest, _ ->
         (* shouldn't happen if indices are correct *)
         build_ordered_match input_var (case_idx + 1) rest mik_comps
     in

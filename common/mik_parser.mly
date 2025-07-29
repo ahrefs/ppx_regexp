@@ -58,7 +58,11 @@ let unclosed_error what startpos endpos =
 %%
 
 main_match_case:
-  | SLASH p = pattern SLASH EOF { p }
+  | SLASH p = pattern SLASH EOF {
+      let dollar = to_pcre_regex "$" $endpos(p) $endpos($3) in
+      let loc = make_loc $startpos(p) $endpos($3) in
+      simplify_seq ~loc [p; dollar]
+    }
   | SLASH pattern EOF { unclosed_error "pattern (missing closing '/')" $startpos($1) $endpos }
   | SLASH error { syntax_error "Invalid pattern after opening slash" $startpos($2) $endpos($2) }
   | error { syntax_error "Expected pattern to start with '/'" $startpos($1) $endpos($1) }
@@ -137,7 +141,7 @@ basic_atom:
       to_pcre_regex $1 $startpos $endpos
     }
   | EMPTY_STR {
-      to_pcre_regex "^$" $startpos $endpos
+      to_pcre_regex "" $startpos $endpos
     }
   | UNDERSCORE {
       to_pcre_regex "." $startpos $endpos

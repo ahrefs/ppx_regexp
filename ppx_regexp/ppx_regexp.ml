@@ -21,7 +21,6 @@ let transformation ctx =
   object (self)
     inherit [value_binding list] Ast_traverse.fold_map as super
 
-    (* Replace the entire method! structure_item in ast_builder.ml with this: *)
     method! structure_item item acc =
       match item.pstr_desc with
       (* let%mik/%pcre x = {|some regex|}*)
@@ -67,32 +66,21 @@ let transformation ctx =
         | _ -> Util.error ~loc "[%%pcre] and [%%mik] only apply to match, function and global let declarations of strings."
       in
       match e_ext.pexp_desc with
-      (* match%mik/match%pcre and function%mik/function%pcre, anchored *)
+      (* match%mikmatch/match%pcre and function%mikmatch/function%pcre, mikmatch anchored *)
       | Pexp_extension ({ txt = ("pcre" | "mikmatch" | "pcre_i" | "mikmatch_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ])
         ->
-        let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
-        let opts =
-          if String.ends_with ~suffix:"_i" ext then `Caseless :: `Anchored :: Util.default_opts else `Anchored :: Util.default_opts
-        in
+        let mode, opts = if String.starts_with ~prefix:"pcre" ext then `Pcre, [] else `Mik, Util.mikmatch_default_opts in
+        let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: opts else opts in
         let loc = e.pexp_loc in
         make_transformations ~mode ~opts ~loc e.pexp_desc
-      (* match%miks/match%pcres and function%miks/function%pcres, non anchored (search) *)
-      | Pexp_extension
-          ({ txt = ("pcres" | "miksearch" | "pcres_i" | "miksearch_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
-        let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
-        let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: Util.default_opts else Util.default_opts in
-        let loc = e.pexp_loc in
-        make_transformations ~mode ~opts ~loc e.pexp_desc
-      (* match smth with | {%mik|some regex|} -> ...*)
+      (* match smth with | {%mikmatch|some regex|} -> ...*)
       | Pexp_match (matched_expr, cases) ->
         let has_ext_case =
           List.exists
             begin
               fun case ->
                 match case.pc_lhs.ppat_desc with
-                | Ppat_extension
-                    ({ txt = "pcre" | "pcres" | "mikmatch" | "miksearch" | "pcre_i" | "pcres_i" | "mikmatch_i" | "miksearch_i"; _ }, _) ->
-                  true
+                | Ppat_extension ({ txt = "pcre" | "mikmatch" | "pcre_i" | "mikmatch_i"; _ }, _) -> true
                 | _ -> false
             end
             cases
@@ -104,9 +92,7 @@ let transformation ctx =
             begin
               fun case ->
                 match case.pc_lhs.ppat_desc with
-                | Ppat_extension
-                    ({ txt = "pcre" | "pcres" | "mikmatch" | "miksearch" | "pcre_i" | "pcres_i" | "mikmatch_i" | "miksearch_i"; _ }, _) ->
-                  true
+                | Ppat_extension ({ txt = "pcre" | "mikmatch" | "pcre_i" | "pcres_i" | "mikmatch_i"; _ }, _) -> true
                 | _ -> false
             end
             cases

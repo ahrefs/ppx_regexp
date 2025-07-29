@@ -60,7 +60,7 @@ string.
 
 ### `%mikmatch`
 
-Full [%mikmatch guide](./MIK.md)
+Full [%mikmatch guide](./MIK.md).
 
 #### Quick Links
 - [Variable capture](./MIK.md#variable-capture)

@@ -175,32 +175,7 @@ function%mikmatch
 This match expression will compile all of the REs in the branches into one, and use marks to find which branch was executed.  
 Efficient if you have multiple branches.
 
-#### `match%miksearch` and `function%miksearch` (search, not anchored)
-
-The previous extension was **anchored**, meaning, it will only match at the beginning of the string.
-
-This version is not, meaning, for example:
-
-```ocaml
-let mik_test = function%mikmatch
-  | {|/ (digit+ as num) /|} -> ...
-  ...
-  | _ -> failwith "no match"
-
-let () = mik_test "123" ...     (* match *)
-let () = mik_test "test123" ... (* ERROR: no match *)
-
-(* but, with %miksearch... *)
-let miks_test = function%miksearch
-  | {|/ (digit+ as num) /|} -> ...
-  ...
-  | _ -> failwith "no match"
-
-let () = miks_test "123" ...     (* match *)
-let () = miks_test "test123" ... (* match *)
-```
-
-Similar for `%miksearch_i`, except it is case insensitive.
+The regexes are anchored both at the beginning, and at the end. So, for example, the first match case will be compiled to `^some regex$`.
 
 #### General match/function
 
@@ -210,13 +185,8 @@ function
   | {%mikmatch|/ some regex /|} -> ...
   ...
   | "another string" -> ...
-  | {%miksearch|/ some regex /|} -> ... (* non-anchored *)
+  | {%mikmatch_i|/ some regex /|} -> ...
   ...
-  | "yet another string" -> ...
-  | {%mikmatch_i|/ another regex /|} -> ... (* case insensitive *)
-  ...
-  | "would you guess it" -> ...
-  | {%miksearch_i|/ another regex /|} -> ... (* non-anchored, case insensitive *)
   | _ -> ...
 ```
 
