@@ -29,6 +29,8 @@ and 'a node =
   | Nongreedy of 'a t
   | Capture of 'a t
   | Capture_as of string Location.loc * 'a t
+  | Named_subs of string Location.loc * string Location.loc option * 'a t
+  | Unnamed_subs of string Location.loc * 'a t
   | Call of Longident.t Location.loc
   (* TODO: | Case_sense of t | Case_blind of t *)
 
@@ -253,34 +255,62 @@ let parse_exn ?(pos = Lexing.dummy_pos) s =
           scan_seq_item j (e :: acc)
        | _ -> scan_seq_item (i + 1) (re_perl (i, i + 1) :: acc))
 
-    and scan_group i =
-      (match get i with
-       | '?' ->
-          if i + 1 = l then fail (i - 1, i) "Unbalanced '('." else
-          (match s.[i + 1] with
-           | '&' ->
-              let j, idr = scan_ident (i + 2) in
-              if get j = ':' then
-                let k, lidr = scan_longident (j + 1) in
-                (k, Capture_as (idr, wrap_loc (j + 1, k) (Call lidr)))
-              else
-                let k, lidr = scan_longident_cont idr.Location.txt j in
-                (k, Call lidr)
-           | '<' ->
-              let j, idr = scan_ident (i + 2) in
-              if get j <> '>' then fail (i, i + 1) "Unbalanced '<'." else
+  and scan_group i =
+    match get i with
+    | '?' ->
+      if i + 1 = l then fail (i - 1, i) "Unbalanced '('."
+      else (
+        match s.[i + 1] with
+        | '&' ->
+          let j, idr = scan_ident (i + 2) in
+          if get j = ':' then (
+            let k, lidr = scan_longident (j + 1) in
+            k, Capture_as (idr, wrap_loc (j + 1, k) (Call lidr)))
+          else (
+            let k, lidr = scan_longident_cont idr.Location.txt j in
+            k, Call lidr)
+        | '<' ->
+          let j, idr = scan_ident (i + 2) in
+          if get j <> '>' then fail (i, i + 1) "Unbalanced '<'."
+          else (
+            let k, e = with_loc scan_alt (j + 1) in
+            k, Capture_as (idr, e))
+        | 'N' ->
+          let j, idr = scan_ident (i + 3) in
+          begin
+            match get j with
+            | '>' ->
               let k, e = with_loc scan_alt (j + 1) in
-              (k, Capture_as (idr, e))
-           | ':' ->
-              scan_alt (i + 2)
-           | '#' ->
-              (try (String.index_from s (i + 2) ')', Seq []) with
-               | Not_found -> fail (i - 1, i + 1) "Unterminated comment.")
-           | _ ->
-              fail (i, i + 2) "Invalid group modifier.")
-       | '+' -> let j, e = with_loc scan_alt (i + 1) in (j, Capture e)
-       | '*' | '{' -> fail (i, i + 1) "Invalid group modifier."
-       | _ -> scan_alt i)
+              k, Named_subs (idr, None, e)
+            | ' ' ->
+              let j, jdr = scan_ident (j + 1) in
+              if jdr.txt = "as" && get j = ' ' then begin
+                let j, kdr = scan_ident (j + 1) in
+                if get j <> '>' then fail (j, j + 1) "Unbalanced '<'."
+                else begin
+                  let k, e = with_loc scan_alt (j + 1) in
+                  k, Named_subs (idr, Some kdr, e)
+                end
+              end
+              else fail (j - 2, j) "Substring name missing."
+            | _ -> fail (i, i + 1) "Unbalanced '<'."
+          end
+        | 'U' ->
+          let j, idr = scan_ident (i + 3) in
+          if get j <> '>' then fail (i, i + 1) "Unbalanced '<'."
+          else begin
+            let k, e = with_loc scan_alt (j + 1) in
+            k, Unnamed_subs (idr, e)
+          end
+        | ':' -> scan_alt (i + 2)
+        | '#' ->
+          (try String.index_from s (i + 2) ')', Seq [] with Not_found -> fail (i - 1, i + 1) "Unterminated comment.")
+        | _ -> fail (i, i + 2) "Invalid group modifier.")
+    | '+' ->
+      let j, e = with_loc scan_alt (i + 1) in
+      j, Capture e
+    | '*' | '{' -> fail (i, i + 1) "Invalid group modifier."
+    | _ -> scan_alt i
   in
 
   (* Top-Level *)
