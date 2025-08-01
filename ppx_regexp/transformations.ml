@@ -31,17 +31,17 @@ module Regexp = struct
   let to_string ~ctx =
     let p_alt, p_seq, p_suffix, p_atom = 0, 1, 2, 3 in
     let delimit_if b s = if b then "(?:" ^ s ^ ")" else s in
+    let get_parsed ~loc idr =
+      let var_name = idr.txt in
+      let content =
+        match Util.Ctx.find var_name ctx with
+        | Some value -> value
+        | None -> Util.error ~loc "Variable '%s' not found. %%pcre and %%mik only support global let bindings for substitution." var_name
+      in
+      content
+    in
     let rec recurse p (e' : _ Location.loc) =
       let loc = e'.Location.loc in
-      let get_parsed idr =
-        let var_name = idr.txt in
-        let content =
-          match Util.Ctx.find var_name ctx with
-          | Some value -> value
-          | None -> Util.error ~loc "Variable '%s' not found. %%pcre and %%mik only support global let bindings for substitution." var_name
-        in
-        content
-      in
       match e'.Location.txt with
       | Code s ->
         (* Delimiters not needed as Regexp.parse_exn only returns single
@@ -60,10 +60,10 @@ module Regexp = struct
       | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mik."
       | Capture_as (_, _, e) -> "(" ^ recurse p_alt e ^ ")"
       | Named_subs (idr, _, _, _) ->
-        let content = get_parsed idr in
+        let content = get_parsed ~loc idr in
         "(" ^ recurse p_alt content ^ ")"
       | Unnamed_subs (idr, _) ->
-        let content = get_parsed idr in
+        let content = get_parsed ~loc idr in
         recurse p_atom content
       | Pipe_all (_, _, e) -> recurse p_alt e
       | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mik."
