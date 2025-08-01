@@ -55,14 +55,14 @@ let transformation ctx =
       let e_ext, acc = super#expression e_ext acc in
       let make_transformations ~mode ~opts ~loc = function
         | Pexp_function cases ->
-          let cases, bindings = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
-          [%expr fun _ppx_regexp_v -> [%e cases]], bindings @ acc
+          let cases, binding = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
+          [%expr fun _ppx_regexp_v -> [%e cases]], binding :: acc
         | Pexp_match (e, cases) ->
-          let cases, bindings = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
+          let cases, binding = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
           ( [%expr
               let _ppx_regexp_v = [%e e] in
               [%e cases]],
-            bindings @ acc )
+            binding :: acc )
         | _ -> Util.error ~loc "[%%pcre] and [%%mik] only apply to match, function and global let declarations of strings."
       in
       match e_ext.pexp_desc with

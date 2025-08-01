@@ -167,7 +167,11 @@ let make_default_rhs ~loc = function
           | _ -> case)
         default_cases
     in
-    pexp_match ~loc [%expr _ppx_regexp_v] transformed
+    match transformed with
+    | [{ pc_lhs = { ppat_desc = Ppat_any; _ }; pc_guard = None; pc_rhs; _ }] ->
+        pc_rhs
+    | _ ->
+        pexp_match ~loc [%expr _ppx_regexp_v] transformed
 
 let transform_let ~mode ~ctx =
   let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Let | `Mik -> Regexp.parse_mik_exn ~target:`Let in
@@ -316,7 +320,7 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
             [%expr match [%e dispatchers] with Some result -> result | None -> [%e default_rhs]]
             handlers]]
   in
-  [%expr [%e match_expr]], [ re_binding ]
+  match_expr, re_binding
 
 (* processes each case individually instead of combining them into one RE *)
 let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
