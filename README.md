@@ -23,7 +23,7 @@ function%pcre
 | {|reN|} -> eN
 | _ -> e0
 ```
-(or `function%mik`) into suitable invocations of the [Re library][re], and similar for `match%pcre`/`match%mik`.
+(or `function%mikmatch`) into suitable invocations of the [Re library][re], and similar for `match%pcre`/`match%mikmatch`.
 
 It also accepts:
 ```ocaml
