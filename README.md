@@ -26,11 +26,18 @@ function%pcre
 into suitable invocations of the [Re library][re], and similar for
 `match%pcre`.  The patterns are plain strings of the form accepted by
 `Re_pcre`, with the following additions:
-
+    
   - `(?<var>...)` defines a group and binds whatever it matches as `var`.
     The type of `var` will be `string` if the match is guaranteed given that
     the whole pattern matches, and `string option` if the variable is bound
     to or nested below an optionally matched group.
+
+  - `(?&var)` gets substituted by the value of the `%pcre` extended string variable named `var`. Doesn't bind.
+
+  - `(?&v:qname)` is a shortcut for `(?<v>(?&qname))`.
+
+  - `(U?<var>)` gets substituted by the value of the globally defined string variable named `var`,
+    and does not bind its match to any name.
 
   - `?<var>` at the start of a pattern binds group 0 as `var : string`.
     This may not be the full string if the pattern is unanchored.
