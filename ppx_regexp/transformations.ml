@@ -15,7 +15,7 @@ module Regexp = struct
       | Opt e -> recurse false e
       | Repeat ({ Location.txt = i, _; _ }, e) -> recurse (must_match && i > 0) e
       | Nongreedy e -> recurse must_match e
-      | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mik."
+      | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
       | Capture_as (idr, conv, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, conv, must_match) :: bs)
       | Named_subs (idr, None, conv, e) | Named_subs (_, Some idr, conv, e) ->
         fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, conv, must_match) :: bs)
@@ -24,7 +24,7 @@ module Regexp = struct
         fun (nG, bs) ->
           let nG', inner_bs = recurse must_match e (nG, []) in
           nG', ((res, None, Some (Pipe_all_func func), must_match) :: inner_bs) @ bs
-      | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mik."
+      | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mikmatch."
     in
     function { Location.txt = Capture_as (idr, conv, e); _ } -> recurse true e (0, [ idr, None, conv, true ]) | e -> recurse true e (0, [])
 
@@ -36,7 +36,8 @@ module Regexp = struct
       let content =
         match Util.Ctx.find var_name ctx with
         | Some value -> value
-        | None -> Util.error ~loc "Variable '%s' not found. %%pcre and %%mik only support global let bindings for substitution." var_name
+        | None ->
+          Util.error ~loc "Variable '%s' not found. %%pcre and %%mikmatch only support global let bindings for substitution." var_name
       in
       content
     in
@@ -57,7 +58,7 @@ module Regexp = struct
         let j_str = match j_opt with None -> "" | Some j -> string_of_int j in
         delimit_if (p > p_suffix) (Printf.sprintf "%s{%d,%s}" (recurse p_atom e) i j_str)
       | Nongreedy e -> recurse p_suffix e ^ "?"
-      | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mik."
+      | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
       | Capture_as (_, _, e) -> "(" ^ recurse p_alt e ^ ")"
       | Named_subs (idr, _, _, _) ->
         let content = get_parsed ~loc idr in
@@ -66,7 +67,7 @@ module Regexp = struct
         let content = get_parsed ~loc idr in
         recurse p_atom content
       | Pipe_all (_, _, e) -> recurse p_alt e
-      | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mik."
+      | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mikmatch."
     in
     function { Location.txt = Capture_as (_, _, e); _ } -> recurse 0 e | e -> recurse 0 e
 end
@@ -167,11 +168,9 @@ let make_default_rhs ~loc = function
           | _ -> case)
         default_cases
     in
-    match transformed with
-    | [{ pc_lhs = { ppat_desc = Ppat_any; _ }; pc_guard = None; pc_rhs; _ }] ->
-        pc_rhs
-    | _ ->
-        pexp_match ~loc [%expr _ppx_regexp_v] transformed
+    (match transformed with
+    | [ { pc_lhs = { ppat_desc = Ppat_any; _ }; pc_guard = None; pc_rhs; _ } ] -> pc_rhs
+    | _ -> pexp_match ~loc [%expr _ppx_regexp_v] transformed)
 
 let transform_let ~mode ~ctx =
   let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Let | `Mik -> Regexp.parse_mik_exn ~target:`Let in
@@ -264,7 +263,7 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
   let re_binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = var; loc }) ~expr:comp in
   let e_comp = pexp_ident ~loc { txt = Lident var; loc } in
 
-  let case_handlers =
+  let case_bindings =
     List.mapi
       begin
         fun i (_, case_group, offG) ->
@@ -284,25 +283,14 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
             in
             [%expr fun _g -> [%e mk_guard_chains (List.rev case_group)]]
           in
-          handler_name, handler_body
+          value_binding ~loc ~pat:(ppat_var ~loc { txt = handler_name; loc }) ~expr:handler_body
       end
+      processed_cases
   in
 
-  let mk_checks cases_with_offsets =
-    let indexed = List.mapi (fun i x -> i, x) cases_with_offsets in
-    List.fold_right
-      begin
-        fun (i, _) acc ->
-          let handler_name = Printf.sprintf "_case_%d" i in
-          [%expr
-            if Re.Mark.test _g (snd [%e e_comp]).([%e eint ~loc i]) then [%e pexp_ident ~loc { txt = Lident handler_name; loc }] _g
-            else [%e acc]]
-      end
-      indexed [%expr None]
+  let handlers_array =
+    pexp_array ~loc @@ List.mapi (fun i _ -> pexp_ident ~loc { txt = Lident (Printf.sprintf "_case_%d" i); loc }) processed_cases
   in
-
-  let handlers = case_handlers processed_cases in
-  let dispatchers = mk_checks processed_cases in
 
   let match_expr =
     [%expr
@@ -310,15 +298,10 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
       | None -> [%e default_rhs]
       | Some _g ->
         [%e
-          List.fold_left
-            begin
-              fun acc (name, body) ->
-                [%expr
-                  let [%p ppat_var ~loc { txt = name; loc }] = [%e body] in
-                  [%e acc]]
-            end
-            [%expr match [%e dispatchers] with Some result -> result | None -> [%e default_rhs]]
-            handlers]]
+          pexp_let ~loc Nonrecursive case_bindings
+            [%expr
+              let handlers = [%e handlers_array] in
+              match __ppx_regexp_dispatch (snd [%e e_comp]) handlers _g with Some result -> result | None -> [%e default_rhs]]]]
   in
   match_expr, re_binding
 
@@ -341,13 +324,13 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
 
   let prepared_cases = List.map aux cases in
 
-  let has_mik = List.exists (function `Ext _ -> true | _ -> false) prepared_cases in
+  let has_ext = List.exists (function `Ext _ -> true | _ -> false) prepared_cases in
 
-  if not has_mik then begin
+  if not has_ext then begin
     match matched_expr with None -> pexp_function ~loc cases, acc | Some m -> pexp_match ~loc m cases, acc
   end
   else begin
-    let mik_compilations =
+    let compilations =
       List.mapi
         begin
           fun i case ->
@@ -364,10 +347,10 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
       |> List.filter_map (fun x -> x)
     in
 
-    let bindings = List.map (fun (_, _, b) -> b) mik_compilations in
+    let bindings = List.map (fun (_, _, b) -> b) compilations in
 
-    let rec build_ordered_match input_var case_idx cases mik_comps =
-      match cases, mik_comps with
+    let rec build_ordered_match input_var case_idx cases comps =
+      match cases, comps with
       | [], _ ->
         (* should not happen if original had catch-all *)
         [%expr raise (Match_failure ("", 0, 0))]
@@ -375,7 +358,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
         [%expr
           match [%e input_var] with
           | [%p case.pc_lhs] when [%e Option.value case.pc_guard ~default:[%expr true]] -> [%e case.pc_rhs]
-          | _ -> [%e build_ordered_match input_var (case_idx + 1) rest mik_comps]]
+          | _ -> [%e build_ordered_match input_var (case_idx + 1) rest comps]]
       | `Ext (_, _, _, bs, rhs, guard) :: rest, (idx, comp_var, _) :: rest_comps when idx = case_idx ->
         let comp_ident = pexp_ident ~loc { txt = Lident comp_var; loc } in
         [%expr
@@ -391,29 +374,18 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
           | None -> [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]]
       | `Ext _ :: rest, _ ->
         (* shouldn't happen if indices are correct *)
-        build_ordered_match input_var (case_idx + 1) rest mik_comps
+        build_ordered_match input_var (case_idx + 1) rest comps
     in
 
-    let match_body = build_ordered_match [%expr _ppx_regexp_v] 0 prepared_cases mik_compilations in
+    let match_body = build_ordered_match [%expr _ppx_regexp_v] 0 prepared_cases compilations in
 
     let match_expr =
-      let init =
-        match matched_expr with
-        | None -> [%expr fun _ppx_regexp_v -> [%e match_body]]
-        | Some m ->
-          [%expr
-            let _ppx_regexp_v = [%e m] in
-            [%e match_body]]
-      in
-      List.fold_left
-        begin
-          fun expr binding ->
-            [%expr
-              let [%p binding.pvb_pat] = [%e binding.pvb_expr] in
-              [%e expr]]
-        end
-        init bindings
+      match matched_expr with
+      | None -> [%expr fun _ppx_regexp_v -> [%e match_body]]
+      | Some m ->
+        [%expr
+          let _ppx_regexp_v = [%e m] in
+          [%e match_body]]
     in
-
     match_expr, bindings @ acc
   end

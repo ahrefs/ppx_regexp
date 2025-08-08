@@ -101,6 +101,21 @@ let transformation ctx =
       | _ -> e_ext, acc
   end
 
+let dispatch_function_binding ~loc =
+  let open Ppxlib in
+  let open Ast_builder.Default in
+  value_binding ~loc
+    ~pat:(ppat_var ~loc { txt = "__ppx_regexp_dispatch"; loc })
+    ~expr:
+      [%expr
+        fun marks handlers _g ->
+          let rec loop i =
+            if i >= Array.length marks then None
+            else if Re.Mark.test _g marks.(i) then (match handlers.(i) _g with Some result -> Some result | None -> loop (i + 1))
+            else loop (i + 1)
+          in
+          loop 0]
+
 let impl str =
   let ctx = Util.Ctx.empty () in
   let str, rev_bindings = (transformation ctx)#structure str [] in
@@ -110,6 +125,7 @@ let impl str =
       let loc = Location.none in
       [%str
         open struct
+          [%%i pstr_value ~loc Nonrecursive [ dispatch_function_binding ~loc ]]
           [%%i pstr_value ~loc Nonrecursive rev_bindings]
         end]
     in

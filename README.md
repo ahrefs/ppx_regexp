@@ -202,7 +202,11 @@ patterns succeed, the match is committed before we can check the guard
 condition.
 
 `ppx_regexp_extended` gets around this by grouping match cases with the same guards and compiling those together, instead
-of every match case being compiled into one RE.
+of every match case being compiled into one RE. 
+> [!WARNING]
+> There is still a limitation with the guards: if two branches have overlapping REs, and the first has a guard that evaluates to false,
+> then the second branch will not be ran. This is because of a limitation with `ocaml-re`'s Marking machine, it only
+> tests until a mark is found, and doesn't search further.
 
 
 ### No Exhaustiveness Check
