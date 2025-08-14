@@ -58,6 +58,11 @@ let unclosed_error what startpos endpos =
 %%
 
 main_match_case:
+  | p = pattern EOF {
+      let dollar = to_pcre_regex "$" $endpos(p) $endpos($2) in
+      let loc = make_loc $startpos(p) $endpos($2) in
+      simplify_seq ~loc [p; dollar]
+    }
   | SLASH p = pattern SLASH EOF {
       let dollar = to_pcre_regex "$" $endpos(p) $endpos($3) in
       let loc = make_loc $startpos(p) $endpos($3) in
