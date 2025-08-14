@@ -1,6 +1,73 @@
 open Ppxlib
 open Ast_builder.Default
 
+module Re_comp = struct
+  let apply_re_opts ~loc re_expr opts =
+    let rec apply re = function
+      | [] -> re
+      | `Caseless :: rest -> apply [%expr Re.no_case [%e re]] rest
+      | `Anchored :: rest -> apply [%expr Re.whole_string [%e re]] rest
+    in
+    apply re_expr opts
+
+  let compile_single ~loc re opts = [%expr Re.compile [%e apply_re_opts ~loc re opts]]
+
+  let compile_marked_group ~loc res opts =
+    let res_with_opts = List.map (fun re -> [%expr Re.mark [%e apply_re_opts ~loc re opts]]) res in
+    [%expr
+      let a = [%e pexp_array ~loc res_with_opts] in
+      let marks = Array.map fst a in
+      let re = Re.compile (Re.alt (Array.to_list (Array.map snd a))) in
+      re, marks]
+
+  let create_re_binding ~loc var_name re_array opts =
+    let is_single = match re_array.pexp_desc with Pexp_array [ _ ] -> true | _ -> false in
+    let comp_expr =
+      if is_single then (
+        match re_array.pexp_desc with
+        | Pexp_array [ re ] ->
+          [%expr
+            let re = [%e compile_single ~loc re opts] in
+            re, [||]]
+        | _ -> assert false)
+      else (match re_array.pexp_desc with Pexp_array res -> compile_marked_group ~loc res opts | _ -> assert false)
+    in
+    value_binding ~loc ~pat:(ppat_var ~loc { txt = var_name; loc }) ~expr:comp_expr
+end
+
+module Bindings = struct
+  let wrap_group_expr ~loc ~mustG iG offG conv =
+    let eG = match iG with None -> [%expr Re.Group.get _g 0] | Some iG -> [%expr Re.Group.get _g [%e eint ~loc (offG + iG + 1)]] in
+    let eG =
+      match conv with
+      | None -> eG
+      | Some Regexp_types.Int -> [%expr int_of_string [%e eG]]
+      | Some Regexp_types.Float -> [%expr float_of_string [%e eG]]
+      | Some (Regexp_types.Func func_name) ->
+        let func_ident = pexp_ident ~loc { txt = Util.extract_qualified_name func_name; loc } in
+        [%expr [%e func_ident] [%e eG]]
+      | Some (Regexp_types.Pipe_all_func _) -> Util.error ~loc "No >>> allowed inside patterns"
+    in
+    if mustG then eG else [%expr try Some [%e eG] with Not_found -> None]
+
+  let rec wrap_group_bindings ~loc ~captured_acc rhs offG = function
+    | [] -> rhs
+    | [ (varG, _, Some (Regexp_types.Pipe_all_func func_name), _) ] ->
+      let func_ident = pexp_ident ~loc { txt = Util.extract_qualified_name func_name; loc } in
+      let captured = List.rev captured_acc in
+      let func_app = List.fold_left (fun expr arg -> [%expr [%e expr] [%e arg]]) func_ident captured in
+      [%expr
+        let [%p ppat_var ~loc varG] = [%e func_app] in
+        [%e rhs]]
+    | (varG, iG, conv, mustG) :: bs ->
+      let eG = wrap_group_expr ~loc ~mustG iG offG conv in
+      let pat = ppat_var ~loc varG in
+      let pat_ident = pexp_ident ~loc @@ { txt = Util.extract_qualified_name varG.txt; loc = varG.loc } in
+      [%expr
+        let [%p pat] = [%e eG] in
+        [%e wrap_group_bindings ~loc ~captured_acc:(pat_ident :: captured_acc) rhs offG bs]]
+end
+
 module Regexp = struct
   open Regexp_types
   include Regexp
@@ -33,12 +100,8 @@ module Regexp = struct
       let loc = e'.Location.loc in
       match e'.Location.txt with
       | Code s -> [%expr Re.Perl.re [%e estring ~loc s]]
-      | Seq es ->
-        let exprs = List.map (recurse ~ctx) es in
-        [%expr Re.seq [%e elist ~loc exprs]]
-      | Alt es ->
-        let exprs = List.map (recurse ~ctx) es in
-        [%expr Re.alt [%e elist ~loc exprs]]
+      | Seq es -> [%expr Re.seq [%e elist ~loc (List.map (recurse ~ctx) es)]]
+      | Alt es -> [%expr Re.alt [%e elist ~loc (List.map (recurse ~ctx) es)]]
       | Opt e -> [%expr Re.opt [%e recurse ~ctx e]]
       | Repeat ({ Location.txt = i, j_opt; _ }, e) ->
         let e_i = eint ~loc i in
@@ -68,21 +131,14 @@ module Regexp = struct
     let delimit_if b s = if b then "(?:" ^ s ^ ")" else s in
     let get_parsed ~loc idr =
       let var_name = idr.txt in
-      let content =
-        match Util.Ctx.find var_name ctx with
-        | Some value -> value
-        | None ->
-          Util.error ~loc "Variable '%s' not found. %%pcre and %%mikmatch only support global let bindings for substitution." var_name
-      in
-      content
+      match Util.Ctx.find var_name ctx with
+      | Some value -> value
+      | None -> Util.error ~loc "Variable '%s' not found. %%pcre and %%mikmatch only support global let bindings for substitution." var_name
     in
     let rec recurse p (e' : _ Location.loc) =
       let loc = e'.Location.loc in
       match e'.Location.txt with
-      | Code s ->
-        (* Delimiters not needed as Regexp.parse_exn only returns single
-         * chars, csets, and escape sequences. *)
-        s
+      | Code s -> s
       | Seq es -> delimit_if (p > p_seq) (String.concat "" (List.map (recurse p_seq) es))
       | Alt es -> delimit_if (p > p_alt) (String.concat "|" (List.map (recurse p_alt) es))
       | Opt e ->
@@ -95,72 +151,35 @@ module Regexp = struct
       | Nongreedy e -> recurse p_suffix e ^ "?"
       | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
       | Capture_as (_, _, e) -> "(" ^ recurse p_alt e ^ ")"
-      | Named_subs (idr, _, _, _) ->
-        let content = get_parsed ~loc idr in
-        "(" ^ recurse p_alt content ^ ")"
-      | Unnamed_subs (idr, _) ->
-        let content = get_parsed ~loc idr in
-        recurse p_atom content
+      | Named_subs (idr, _, _, _) -> "(" ^ recurse p_alt (get_parsed ~loc idr) ^ ")"
+      | Unnamed_subs (idr, _) -> recurse p_atom (get_parsed ~loc idr)
       | Pipe_all (_, _, e) -> recurse p_alt e
       | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mikmatch."
     in
     function { Location.txt = Capture_as (_, _, e); _ } -> recurse 0 e | e -> recurse 0 e
 end
 
-let apply_re_opts ~loc re_expr opts =
-  let rec apply re = function
-    | [] -> re
-    | `Caseless :: rest -> apply [%expr Re.no_case [%e re]] rest
-    | `Anchored :: rest -> apply [%expr Re.whole_string [%e re]] rest
-  in
-  apply re_expr opts
+module Parser = struct
+  let get_parser mode target = match mode with `Pcre -> Regexp.parse_exn ~target | `Mik -> Regexp.parse_mik_exn ~target
 
-let rec wrap_group_bindings ~loc ~captured_acc rhs offG = function
-  | [] -> rhs
-  | [ (varG, _, Some (Regexp_types.Pipe_all_func func_name), _) ] ->
-    let func_ident = pexp_ident ~loc { txt = Util.extract_qualified_name func_name; loc } in
-    let captured = List.rev captured_acc in
-    let func_app = List.fold_left (fun expr arg -> [%expr [%e expr] [%e arg]]) func_ident captured in
-    [%expr
-      let [%p ppat_var ~loc varG] = [%e func_app] in
-      [%e rhs]]
-  | (varG, iG, conv, mustG) :: bs ->
-    let eG = match iG with None -> [%expr Re.Group.get _g 0] | Some iG -> [%expr Re.Group.get _g [%e eint ~loc (offG + iG + 1)]] in
-    let eG =
-      match conv with
-      | None -> eG
-      | Some Regexp_types.Int -> [%expr int_of_string [%e eG]]
-      | Some Regexp_types.Float -> [%expr float_of_string [%e eG]]
-      | Some (Regexp_types.Func func_name) ->
-        let func_ident = pexp_ident ~loc { txt = Util.extract_qualified_name func_name; loc } in
-        [%expr [%e func_ident] [%e eG]]
-      | Some (Regexp_types.Pipe_all_func _) ->
-        Util.error ~loc "No >>> allowed inside patterns" (* parser makes sure this is never the case *)
-    in
-    let eG = if mustG then eG else [%expr try Some [%e eG] with Not_found -> None] in
+  let extract_bindings ~parser ~ctx s =
+    let r = parser s in
+    let nG, bs = Regexp.bindings r in
+    let re = Regexp.to_re_expr ~ctx r in
+    re, bs, nG
 
-    let pat = ppat_var ~loc varG in
-    let pat_ident = pexp_ident ~loc @@ { txt = Util.extract_qualified_name varG.txt; loc = varG.loc } in
-    [%expr
-      let [%p pat] = [%e eG] in
-      [%e wrap_group_bindings ~loc ~captured_acc:(pat_ident :: captured_acc) rhs offG bs]]
+  let parse_mode_from_ext ext =
+    let mode = if String.starts_with ~prefix:"pcre" ext then `Pcre else `Mik in
+    let base_opts = match mode with `Pcre -> [] | `Mik -> Util.mikmatch_default_opts in
+    let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: base_opts else base_opts in
+    mode, opts
+end
 
 let rec separate_defaults acc = function
   | [] -> List.rev acc, []
   | ({ pc_lhs = { ppat_desc = Ppat_any; _ }; _ } as case) :: rest -> acc, case :: rest
   | ({ pc_lhs = { ppat_desc = Ppat_var _; _ }; _ } as case) :: rest -> acc, case :: rest
   | case :: rest -> separate_defaults (case :: acc) rest
-
-let rec create_opts ~loc = function
-  | [] -> [%expr []]
-  | `Caseless :: xs -> [%expr `Caseless :: [%e create_opts ~loc xs]]
-  | `Anchored :: xs -> [%expr `Anchored :: [%e create_opts ~loc xs]]
-
-let extract_bindings ~(parser : ?pos:position -> string -> string Regexp_types.t) ~ctx ~pos s =
-  let r = parser ~pos s in
-  let nG, bs = Regexp.bindings r in
-  let re = Regexp.to_re_expr ~ctx r in
-  re, bs, nG
 
 let make_default_rhs ~loc = function
   | [] ->
@@ -188,12 +207,27 @@ let make_default_rhs ~loc = function
           | _ -> case)
         default_cases
     in
-    (match transformed with
-    | [ { pc_lhs = { ppat_desc = Ppat_any; _ }; pc_guard = None; pc_rhs; _ } ] -> pc_rhs
-    | _ -> pexp_match ~loc [%expr _ppx_regexp_v] transformed)
+    begin
+      match transformed with
+      | [ { pc_lhs = { ppat_desc = Ppat_any; _ }; pc_guard = None; pc_rhs; _ } ] -> pc_rhs
+      | _ -> pexp_match ~loc [%expr _ppx_regexp_v] transformed
+    end
+
+let extract_re_from_case ~mode ~ctx case =
+  Ast_pattern.(parse (pstring __')) case.pc_lhs.ppat_loc case.pc_lhs (fun { txt = re_src; loc = { loc_start; loc_end; _ } } ->
+    let re_offset = (loc_end.pos_cnum - loc_start.pos_cnum - String.length re_src) / 2 in
+    let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset; pos_lnum = loc_end.pos_lnum } in
+    let parser = Parser.get_parser mode `Match ~pos in
+    let re, bs, nG = Parser.extract_bindings ~parser ~ctx re_src in
+    re, nG, bs, case.pc_rhs, case.pc_guard)
+
+let build_exec_match ~loc ~re_var ~continue_next ~on_match =
+  [%expr match Re.exec_opt (fst [%e re_var]) _ppx_regexp_v with None -> [%e continue_next] | Some _g -> [%e on_match]]
+
+(* Transformations *)
 
 let transform_let ~mode ~ctx =
-  let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Let | `Mik -> Regexp.parse_mik_exn ~target:`Let in
+  let parser = Parser.get_parser mode `Let in
   List.map
     begin
       fun vb ->
@@ -203,7 +237,7 @@ let transform_let ~mode ~ctx =
           else begin
             let string_loc = vb.pvb_expr.pexp_loc in
             let pos = string_loc.loc_start in
-            let pos = { pos with pos_cnum = pos.pos_cnum + 2 (* skip opening *) } in
+            let pos = { pos with pos_cnum = pos.pos_cnum + 2 } in
             let parsed = parser ~pos value in
             Hashtbl.replace ctx var_name parsed;
             let warning_attr =
@@ -216,18 +250,9 @@ let transform_let ~mode ~ctx =
     end
 
 let transform_cases ~mode ~opts ~loc ~ctx cases =
-  let aux case =
-    Ast_pattern.(parse (pstring __'))
-      loc case.pc_lhs
-      begin
-        fun { txt = re_src; loc = { loc_start; loc_end; _ } } ->
-          let re_offset = (loc_end.pos_cnum - loc_start.pos_cnum - String.length re_src) / 2 in
-          let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset; pos_lnum = loc_end.pos_lnum } in
-          let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Match | `Mik -> Regexp.parse_mik_exn ~target:`Match in
-          let re, bs, nG = extract_bindings ~parser ~pos ~ctx re_src in
-          re, nG, bs, case.pc_rhs, case.pc_guard
-      end
-  in
+  let cases, default_cases = separate_defaults [] cases in
+  let default_rhs = make_default_rhs ~loc default_cases in
+  let processed_cases = List.map (extract_re_from_case ~mode ~ctx) cases in
 
   let group_by_guard_and_re cases =
     let rec group acc current_group = function
@@ -247,20 +272,18 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
   in
 
   let compile_group group_idx group_cases =
-    (* 1: group cases by their regex pattern *)
     let group_by_pattern cases =
-      let add_case_to_groups (re, nG, bs, rhs, guard) groups =
-        let rec update_groups = function
+      let add_case groups (re, nG, bs, rhs, guard) =
+        let rec update = function
           | [] -> [ re, [ nG, bs, rhs, guard ] ]
-          | (re', cases) :: rest when re = re' -> (re', (nG, bs, rhs, guard) :: cases) :: rest
-          | group :: rest -> group :: update_groups rest
+          | (re', cs) :: rest when re = re' -> (re', (nG, bs, rhs, guard) :: cs) :: rest
+          | g :: rest -> g :: update rest
         in
-        update_groups groups
+        update groups
       in
-      List.fold_left (fun acc case -> add_case_to_groups case acc) [] cases |> List.rev
+      List.fold_left add_case [] cases |> List.rev
     in
 
-    (* 2: calculate offsets for capture groups *)
     let calculate_offsets pattern_groups =
       let rec calc acc offset = function
         | [] -> List.rev acc
@@ -271,185 +294,132 @@ let transform_cases ~mode ~opts ~loc ~ctx cases =
       calc [] 0 pattern_groups
     in
 
-    (* 3: create handler function for cases *)
     let create_handler handler_name case_handlers offset =
       let rec make_guard_chain = function
         | [] -> [%expr None]
-        | (_, bs, rhs, None) :: _ ->
-          (* no guard - directly return result *)
-          let bs_rev = List.rev bs in
-          [%expr Some [%e wrap_group_bindings ~captured_acc:[] ~loc rhs offset bs_rev]]
+        | (_, bs, rhs, None) :: _ -> [%expr Some [%e Bindings.wrap_group_bindings ~captured_acc:[] ~loc rhs offset (List.rev bs)]]
         | (_, bs, rhs, Some guard_expr) :: rest ->
-          (* has guard - check it and continue if fails *)
-          let bs_rev = List.rev bs in
           let guarded = [%expr if [%e guard_expr] then Some [%e rhs] else [%e make_guard_chain rest]] in
-          wrap_group_bindings ~captured_acc:[] ~loc guarded offset bs_rev
+          Bindings.wrap_group_bindings ~captured_acc:[] ~loc guarded offset (List.rev bs)
       in
-      let body = [%expr fun _g -> [%e make_guard_chain (List.rev case_handlers)]] in
-      handler_name, body
+      handler_name, [%expr fun _g -> [%e make_guard_chain (List.rev case_handlers)]]
     in
 
     let pattern_groups = group_by_pattern group_cases in
     let patterns_with_offsets = calculate_offsets pattern_groups in
-
     let re_array = patterns_with_offsets |> List.map (fun (re, _, _) -> re) |> pexp_array ~loc in
-
     let handlers =
-      patterns_with_offsets
-      |> List.mapi (fun i (_, case_handlers, offset) ->
-           let handler_name = Printf.sprintf "_group%d_case_%d" group_idx i in
-           create_handler handler_name case_handlers offset)
+      List.mapi
+        (fun i (_, case_handlers, offset) -> create_handler (Printf.sprintf "_group%d_case_%d" group_idx i) case_handlers offset)
+        patterns_with_offsets
     in
-
     re_array, handlers
   in
 
-  let build_group_match_expr ~loc ~idx ~re_var_name ~handlers ~has_guards ~is_single_pattern =
-    let re_var = pexp_ident ~loc { txt = Lident re_var_name; loc } in
-    let continue_next = [%expr __ppx_regexp_try_next ([%e eint ~loc idx] + 1)] in
-
-    let build_exec_match ~on_match =
-      [%expr match Re.exec_opt (fst [%e re_var]) _ppx_regexp_v with None -> [%e continue_next] | Some _g -> [%e on_match]]
-    in
-
-    if is_single_pattern then (
-      (* single pattern: direct handler call, no dispatcher *)
-      let handler_name = fst (List.hd handlers) in
-      let handler = pexp_ident ~loc { txt = Lident handler_name; loc } in
-
-      build_exec_match ~on_match:[%expr match [%e handler] _g with Some result -> result | None -> [%e continue_next]])
-    else (
-      (* multiple patterns: use dispatcher *)
-      let handlers_array = handlers |> List.map (fun (name, _) -> pexp_ident ~loc { txt = Lident name; loc }) |> pexp_array ~loc in
-
-      let dispatch_call = [%expr __ppx_regexp_dispatch (snd [%e re_var]) [%e handlers_array] _g] in
-
-      build_exec_match
-        ~on_match:
-          (if has_guards then [%expr match [%e dispatch_call] with Some result -> result | None -> [%e continue_next]]
-           else [%expr match [%e dispatch_call] with Some result -> result | None -> assert false]))
-  in
-
-  let cases, default_cases = separate_defaults [] cases in
-  let default_rhs = make_default_rhs ~loc default_cases in
-  let processed_cases = List.map aux cases in
   let case_groups = group_by_guard_and_re processed_cases in
 
   let compiled_groups =
     List.mapi
-      (fun i group_cases ->
-        let re_var_name = Util.fresh_var () in
-        let re_array, handlers = compile_group i group_cases in
-        re_var_name, re_array, handlers)
+      begin
+        fun i group_cases ->
+          let re_var_name = Util.fresh_var () in
+          let re_array, handlers = compile_group i group_cases in
+          re_var_name, re_array, handlers
+      end
       case_groups
   in
 
-  let re_bindings =
-    List.map
-      (fun (var_name, re_array, _) ->
-        let is_single = match re_array.pexp_desc with Pexp_array [ _ ] -> true | _ -> false in
-
-        let comp_expr =
-          if is_single then (
-            (* single pattern - no marks needed *)
-            let single_re = match re_array.pexp_desc with Pexp_array [ re ] -> re | _ -> assert false in
-            [%expr
-              let re = Re.compile [%e apply_re_opts ~loc single_re opts] in
-              re, [||]])
-          else (
-            (* multiple patterns - mark each one *)
-            let res_with_opts =
-              match re_array.pexp_desc with
-              | Pexp_array res -> res |> List.map (fun re -> [%expr Re.mark [%e apply_re_opts ~loc re opts]])
-              | _ -> assert false
-            in
-            [%expr
-              let a = [%e pexp_array ~loc res_with_opts] in
-              let marks = Array.map fst a in
-              let re = Re.compile (Re.alt (Array.to_list (Array.map snd a))) in
-              re, marks])
-        in
-        value_binding ~loc ~pat:(ppat_var ~loc { txt = var_name; loc }) ~expr:comp_expr)
-      compiled_groups
-  in
+  let re_bindings = List.map (fun (var_name, re_array, _) -> Re_comp.create_re_binding ~loc var_name re_array opts) compiled_groups in
 
   let handler_bindings =
-    compiled_groups
-    |> List.concat_map (fun (_, _, handlers) ->
-         handlers |> List.map (fun (name, body) -> value_binding ~loc ~pat:(ppat_var ~loc { txt = name; loc }) ~expr:body))
+    List.concat_map
+      begin
+        fun (_, _, handlers) ->
+          handlers |> List.map (fun (name, body) -> value_binding ~loc ~pat:(ppat_var ~loc { txt = name; loc }) ~expr:body)
+      end
+      compiled_groups
   in
 
   let build_match_cascade groups =
     let groups_with_info =
       List.mapi
-        (fun i (re_var_name, re_array, handlers) ->
-          let group_cases = List.nth case_groups i in
-          let has_guards = List.exists (fun (_, _, _, _, g) -> g <> None) group_cases in
-          let is_single_pattern = match re_array.pexp_desc with Pexp_array [ _ ] -> true | _ -> false in
-          i, re_var_name, handlers, has_guards, is_single_pattern)
+        begin
+          fun i (re_var_name, re_array, handlers) ->
+            let group_cases = List.nth case_groups i in
+            let has_guards = List.exists (fun (_, _, _, _, g) -> g <> None) group_cases in
+            let is_single = match re_array.pexp_desc with Pexp_array [ _ ] -> true | _ -> false in
+            i, re_var_name, handlers, has_guards, is_single
+        end
         groups
     in
 
     let match_cases =
-      groups_with_info
-      |> List.map (fun (idx, re_var_name, handlers, has_guards, is_single_pattern) ->
-           let match_expr = build_group_match_expr ~loc ~idx ~re_var_name ~handlers ~has_guards ~is_single_pattern in
-           case ~lhs:(ppat_constant ~loc (Pconst_integer (string_of_int idx, None))) ~guard:None ~rhs:match_expr)
+      List.map
+        begin
+          fun (idx, re_var_name, handlers, has_guards, is_single) ->
+            let re_var = pexp_ident ~loc { txt = Lident re_var_name; loc } in
+            let continue_next = [%expr __ppx_regexp_try_next ([%e eint ~loc idx] + 1)] in
+
+            let on_match =
+              if is_single then begin
+                let handler = pexp_ident ~loc { txt = Lident (fst (List.hd handlers)); loc } in
+                [%expr match [%e handler] _g with Some result -> result | None -> [%e continue_next]]
+              end
+              else begin
+                let handlers_array =
+                  handlers |> List.map (fun (name, _) -> pexp_ident ~loc { txt = Lident name; loc }) |> pexp_array ~loc
+                in
+                let dispatch = [%expr __ppx_regexp_dispatch (snd [%e re_var]) [%e handlers_array] _g] in
+                if has_guards then [%expr match [%e dispatch] with Some result -> result | None -> [%e continue_next]]
+                else [%expr match [%e dispatch] with Some result -> result | None -> assert false]
+              end
+            in
+
+            let match_expr = build_exec_match ~loc ~re_var ~continue_next ~on_match in
+            case ~lhs:(ppat_constant ~loc (Pconst_integer (string_of_int idx, None))) ~guard:None ~rhs:match_expr
+        end
+        groups_with_info
     in
 
     let default_case = case ~lhs:(ppat_any ~loc) ~guard:None ~rhs:default_rhs in
-
     [%expr
       let rec __ppx_regexp_try_next group_idx = [%e pexp_match ~loc [%expr group_idx] (match_cases @ [ default_case ])] in
       __ppx_regexp_try_next 0]
   in
 
   let match_cascade = build_match_cascade compiled_groups in
-
-  (* Add handler bindings if needed *)
   let match_expr = if handler_bindings = [] then match_cascade else pexp_let ~loc Nonrecursive handler_bindings match_cascade in
-
   match_expr, re_bindings
 
-(* processes each case individually instead of combining them into one RE *)
 let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
   let aux case =
     match case.pc_lhs.ppat_desc with
     | Ppat_extension
         ( { txt = ("pcre" | "mikmatch" | "pcre_i" | "mikmatch_i") as ext; _ },
-          (* anchored *)
           PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
-      let mode, opts = if String.starts_with ~prefix:"pcre" ext then `Pcre, [] else `Mik, Util.mikmatch_default_opts in
-      let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: opts else opts in
-      let parser = match mode with `Pcre -> Regexp.parse_exn ~target:`Match | `Mik -> Regexp.parse_mik_exn ~target:`Match in
-      let re, bs, nG = extract_bindings ~parser ~pos ~ctx pat in
+      let mode, opts = Parser.parse_mode_from_ext ext in
+      let parser = Parser.get_parser mode `Match ~pos in
+      let re, bs, nG = Parser.extract_bindings ~parser ~ctx pat in
       `Ext (opts, re, nG, bs, case.pc_rhs, case.pc_guard)
     | _ -> `Regular case
   in
 
   let prepared_cases = List.map aux cases in
-
   let has_ext = List.exists (function `Ext _ -> true | _ -> false) prepared_cases in
 
-  if not has_ext then begin
-    match matched_expr with None -> pexp_function ~loc cases, acc | Some m -> pexp_match ~loc m cases, acc
-  end
+  if not has_ext then (match matched_expr with None -> pexp_function ~loc cases, acc | Some m -> pexp_match ~loc m cases, acc)
   else begin
     let compilations =
-      List.mapi
-        begin
-          fun i case ->
-            match case with
-            | `Ext (opts, re, _, _, _, _) ->
-              let comp_var = Util.fresh_var () in
-              let re_with_opts = apply_re_opts ~loc re opts in
-              let comp_expr = [%expr Re.compile [%e re_with_opts]] in
-              let binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = comp_var; loc }) ~expr:comp_expr in
-              Some (i, comp_var, binding)
-            | _ -> None
-        end
-        prepared_cases
+      prepared_cases
+      |> List.mapi (fun i case ->
+           match case with
+           | `Ext (opts, re, _, _, _, _) ->
+             let comp_var = Util.fresh_var () in
+             let comp_expr = Re_comp.compile_single ~loc re opts in
+             let binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = comp_var; loc }) ~expr:comp_expr in
+             Some (i, comp_var, binding)
+           | _ -> None)
       |> List.filter_map (fun x -> x)
     in
 
@@ -457,9 +427,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
 
     let rec build_ordered_match input_var case_idx cases comps =
       match cases, comps with
-      | [], _ ->
-        (* should not happen if original had catch-all *)
-        [%expr raise (Match_failure ("", 0, 0))]
+      | [], _ -> [%expr raise (Match_failure ("", 0, 0))]
       | `Regular case :: rest, _ ->
         [%expr
           match [%e input_var] with
@@ -473,18 +441,15 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
             [%e
               let bs = List.rev bs in
               match guard with
-              | None -> wrap_group_bindings ~captured_acc:[] ~loc rhs 0 bs
+              | None -> Bindings.wrap_group_bindings ~captured_acc:[] ~loc rhs 0 bs
               | Some g ->
                 let guarded_rhs = [%expr if [%e g] then [%e rhs] else [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]] in
-                wrap_group_bindings ~captured_acc:[] ~loc guarded_rhs 0 bs]
+                Bindings.wrap_group_bindings ~captured_acc:[] ~loc guarded_rhs 0 bs]
           | None -> [%e build_ordered_match input_var (case_idx + 1) rest rest_comps]]
-      | `Ext _ :: rest, _ ->
-        (* shouldn't happen if indices are correct *)
-        build_ordered_match input_var (case_idx + 1) rest comps
+      | `Ext _ :: rest, _ -> build_ordered_match input_var (case_idx + 1) rest comps
     in
 
     let match_body = build_ordered_match [%expr _ppx_regexp_v] 0 prepared_cases compilations in
-
     let match_expr =
       match matched_expr with
       | None -> [%expr fun _ppx_regexp_v -> [%e match_body]]
