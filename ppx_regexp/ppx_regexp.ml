@@ -53,12 +53,12 @@ let transformation ctx =
 
     method! expression e_ext acc =
       let e_ext, acc = super#expression e_ext acc in
-      let make_transformations ~mode ~opts ~loc = function
+      let make_transformations ~mode ~loc = function
         | Pexp_function cases ->
-          let cases, binding = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
+          let cases, binding = Transformations.transform_cases ~mode ~loc ~ctx cases in
           [%expr fun _ppx_regexp_v -> [%e cases]], binding @ acc
         | Pexp_match (e, cases) ->
-          let cases, binding = Transformations.transform_cases ~mode ~opts ~loc ~ctx cases in
+          let cases, binding = Transformations.transform_cases ~mode ~loc ~ctx cases in
           ( [%expr
               let _ppx_regexp_v = [%e e] in
               [%e cases]],
@@ -67,12 +67,10 @@ let transformation ctx =
       in
       match e_ext.pexp_desc with
       (* match%mikmatch/match%pcre and function%mikmatch/function%pcre, mikmatch anchored *)
-      | Pexp_extension ({ txt = ("pcre" | "mikmatch" | "pcre_i" | "mikmatch_i") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ])
-        ->
-        let mode, opts = if String.starts_with ~prefix:"pcre" ext then `Pcre, [] else `Mik, Util.mikmatch_default_opts in
-        let opts = if String.ends_with ~suffix:"_i" ext then `Caseless :: opts else opts in
+      | Pexp_extension ({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
+        let mode = if "pcre" = ext then `Pcre else `Mik in
         let loc = e.pexp_loc in
-        make_transformations ~mode ~opts ~loc e.pexp_desc
+        make_transformations ~mode ~loc e.pexp_desc
       (* match smth with | {%mikmatch|some regex|} -> ...*)
       | Pexp_match (matched_expr, cases) ->
         let has_ext_case =

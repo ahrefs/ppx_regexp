@@ -91,6 +91,7 @@ rule token = parse
   | "int" { INT_CONVERTER }
   | "float" { FLOAT_CONVERTER }
   | "$" { PREDEFINED_CLASS "$" }
+  | ['i' 'u' ' ' '\t']* as flags { FLAGS flags }
   | digit+ as n { INT n }
   | module_ident as id { MOD_IDENT id }
   | ident as id {

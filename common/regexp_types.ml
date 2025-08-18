@@ -25,3 +25,11 @@ and conv_ty =
   | Float
   | Func of string
   | Pipe_all_func of string
+
+type flags = {
+  case_insensitive : bool; (* i *)
+  anchored : bool; (* for pcre: a - true | for mikmatch: u - false*)
+}
+
+let pcre_default_flags = { case_insensitive = false; anchored = false }
+let mikmatch_default_flags = { case_insensitive = false; anchored = true }

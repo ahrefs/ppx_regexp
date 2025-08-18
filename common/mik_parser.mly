@@ -38,15 +38,27 @@ let missing_error what startpos endpos =
 
 let unclosed_error what startpos endpos =
   syntax_error (Printf.sprintf "Unclosed %s" what) startpos endpos
+
+let parse_flags s startpos endpos =
+  let rec loop i flags =
+    if i >= String.length s then flags
+    else
+      match s.[i] with
+      | ' ' | '\t' | '\n' | '\r' -> loop (i + 1) flags
+      | 'i' -> loop (i + 1) { flags with case_insensitive = true }
+      | 'u' -> loop (i + 1) { flags with anchored = false }
+      | c -> syntax_error (Printf.sprintf "Unknown flag '%c'" c) startpos endpos
+  in
+  loop 0 mikmatch_default_flags
 %}
 
-%token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS INT
+%token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS INT FLAGS
 %token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE EMPTY_STR
 %token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS PIPE
 %token INT_CONVERTER FLOAT_CONVERTER EOF
 
-%start <string t> main_match_case
-%start <string t> main_let_expr
+%start <string t * flags> main_match_case
+%start <string t * flags> main_let_expr
 %start <string t> pattern
 
 /* operator precedence from lowest to highest */
@@ -61,19 +73,24 @@ main_match_case:
   | p = pattern EOF {
       let dollar = to_pcre_regex "$" $endpos(p) $endpos($2) in
       let loc = make_loc $startpos(p) $endpos($2) in
-      simplify_seq ~loc [p; dollar]
+      simplify_seq ~loc [p; dollar], mikmatch_default_flags
     }
   | SLASH p = pattern SLASH EOF {
       let dollar = to_pcre_regex "$" $endpos(p) $endpos($3) in
       let loc = make_loc $startpos(p) $endpos($3) in
-      simplify_seq ~loc [p; dollar]
+      simplify_seq ~loc [p; dollar], mikmatch_default_flags
+    }
+  | SLASH p = pattern SLASH flags = FLAGS EOF {
+      let dollar = to_pcre_regex "$" $endpos(p) $endpos($3) in
+      let loc = make_loc $startpos(p) $endpos($3) in
+      simplify_seq ~loc [p; dollar], parse_flags flags $startpos(flags) $endpos(flags)
     }
   | SLASH pattern EOF { unclosed_error "pattern (missing closing '/')" $startpos($1) $endpos }
   | SLASH error { syntax_error "Invalid pattern after opening slash" $startpos($2) $endpos($2) }
   | error { syntax_error "Expected pattern to start with '/'" $startpos($1) $endpos($1) }
 
 main_let_expr:
-  | p = pattern EOF { p }
+  | p = pattern EOF { p, mikmatch_default_flags }
 
 pattern:
   | alt_expr { $1 }

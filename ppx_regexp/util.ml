@@ -1,7 +1,6 @@
 open Ppxlib
 open Ast_builder.Default
 
-let mikmatch_default_opts = [ `Anchored ]
 let error = Location.raise_errorf
 
 let warn ~loc msg e =

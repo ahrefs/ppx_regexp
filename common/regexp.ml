@@ -36,6 +36,32 @@ module Int_map = struct
 end
 
 let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
+  let s, flags =
+    let l = String.length s in
+    if l > 0 && s.[0] = '/' then (
+      match String.rindex_opt s '/' with
+      | Some j when j > 0 ->
+        let pattern = String.sub s 1 (j - 1) in
+        let flag_str = String.sub s (j + 1) (l - j - 1) in
+
+        (* Format.printf "%s@." pattern; *)
+        (* Format.printf "%s@." flag_str; *)
+        let rec parse_flags i acc =
+          if i >= String.length flag_str then acc
+          else (
+            match flag_str.[i] with
+            | ' ' | '\t' | '\n' | '\r' -> parse_flags (i + 1) acc
+            | 'i' -> parse_flags (i + 1) { acc with case_insensitive = true }
+            | 'a' -> parse_flags (i + 1) { acc with anchored = true }
+            | c ->
+              let error_pos = j + 1 + i in
+              Location.raise_errorf ~loc:Location.none "Unknown flag '%c' at position %d" c error_pos)
+        in
+        pattern, parse_flags 0 pcre_default_flags
+      | _ -> Location.raise_errorf ~loc:Location.none "Unmatched opening '/'")
+    else s, pcre_default_flags
+  in
+
   let l = String.length s in
   let get i = if i = l then ')' else s.[i] in
 
@@ -57,8 +83,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
   in
   let make_loc (i, j) =
     let open Location in
-    if pos = Lexing.dummy_pos then Location.none
-    else { loc_start = position_of_index i; loc_end = position_of_index j; loc_ghost = false }
+    if pos = Lexing.dummy_pos then Location.none else { loc_start = position_of_index i; loc_end = position_of_index j; loc_ghost = false }
   in
   let wrap_loc (i, j) x = Location.{ txt = x; loc = make_loc (i, j) } in
   let with_loc f i =
@@ -78,9 +103,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
   (* Identifiers *)
   let scan_ident i =
     let rec scan_cont j =
-      match get j with
-      | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' | '\'' -> scan_cont (j + 1)
-      | _ -> j, String.sub s i (j - i)
+      match get j with 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' | '\'' -> scan_cont (j + 1) | _ -> j, String.sub s i (j - i)
     in
     match get i with 'A' .. 'Z' | 'a' .. 'z' | '_' -> scan_cont (i + 1) | _ -> fail (i, i) "Expecting an identifier."
   in
@@ -114,8 +137,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
     if j = l then fail (i, i + 1) "Unbalanced '['."
     else (
       match s.[j] with
-      | '\\' ->
-        if j + 1 = l then fail (j, j + 1) "Backslash at end of RE while scanning character set." else scan_cset i (j + 2)
+      | '\\' -> if j + 1 = l then fail (j, j + 1) "Backslash at end of RE while scanning character set." else scan_cset i (j + 2)
       | '[' when get (j + 1) = ':' ->
         (match String.index_from s (j + 1) ']' with
         | exception Not_found -> fail (j + 1, j + 2) "Unbalanced '[' in character set."
@@ -127,8 +149,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
   (* Repeat and Opt *)
   let scan_int_opt i =
     let rec loop i n =
-      if i = l then i, n
-      else (match s.[i] with '0' .. '9' as ch -> loop (i + 1) ((10 * n) + (Char.code ch - 48)) | _ -> i, n)
+      if i = l then i, n else (match s.[i] with '0' .. '9' as ch -> loop (i + 1) ((10 * n) + (Char.code ch - 48)) | _ -> i, n)
     in
     let j, n = loop i 0 in
     j, if i = j then None else Some n
@@ -151,9 +172,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
       | '+' -> fail (i, i + 1) "Possessive modifier not supported."
       | _ -> i, fun e -> e
     in
-    match get j with
-    | '?' | '*' | '+' | '{' -> fail (j, j + 1) "Nested repetition must be parenthesized."
-    | _ -> j, greedyness
+    match get j with '?' | '*' | '+' | '{' -> fail (j, j + 1) "Nested repetition must be parenthesized." | _ -> j, greedyness
   in
   let repeat (i, j) (n_min, n_max) = suffix_loc j (fun e -> Repeat (wrap_loc (i, j) (n_min, n_max), e)) in
 
@@ -198,8 +217,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
         scan_seq_item k (apply_to_head (i, k) (g % f) acc))
     | '(' ->
       let j, e = scan_group (i + 1) in
-      if j = l || s.[j] <> ')' then fail (i, i + 1) "Unbalanced '('."
-      else scan_seq_item (j + 1) (wrap_loc (i, j + 1) e :: acc)
+      if j = l || s.[j] <> ')' then fail (i, i + 1) "Unbalanced '('." else scan_seq_item (j + 1) (wrap_loc (i, j + 1) e :: acc)
     | '^' -> scan_seq_item (i + 1) (re_perl (i, i + 1) :: acc)
     | '$' -> scan_seq_item (i + 1) (re_perl (i, i + 1) :: acc)
     | '\\' ->
@@ -254,8 +272,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
             k, Unnamed_subs (idr, e)
           end
         | ':' -> scan_alt (i + 2)
-        | '#' ->
-          (try String.index_from s (i + 2) ')', Seq [] with Not_found -> fail (i - 1, i + 1) "Unterminated comment.")
+        | '#' -> (try String.index_from s (i + 2) ')', Seq [] with Not_found -> fail (i - 1, i + 1) "Unterminated comment.")
         | _ -> fail (i, i + 2) "Invalid group modifier.")
     | '+' ->
       let j, e = with_loc scan_alt (i + 1) in
@@ -267,7 +284,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
   (* Top-Level *)
   let scan_toplevel i = if get i = '?' && get (i + 1) = '<' then scan_group i else scan_alt i in
   let j, e = with_loc scan_toplevel 0 in
-  if j <> l then fail (j, j + 1) "Unbalanced ')'." else e
+  if j <> l then fail (j, j + 1) "Unbalanced ')'." else e, flags
 
 let parse_mik_exn ~target ?(pos = Lexing.dummy_pos) s =
   let lexbuf = Lexing.from_string s in
