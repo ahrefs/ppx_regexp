@@ -26,9 +26,27 @@ let transformation ctx =
       (* let%mik/%pcre x = {|some regex|}*)
       | Pstr_extension (({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
         let mode = if ext = "pcre" then `Pcre else `Mik in
-        let bindings = Transformations.transform_let ~mode ~ctx vbs in
-        let new_item = { item with pstr_desc = Pstr_value (rec_flag, bindings) } in
-        new_item, acc
+        let processed_vbs, collected_bindings =
+          List.fold_left
+            (fun (vbs_acc, bindings_acc) vb ->
+              match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+              (* pattern definition - let%mikmatch/%pcre name = {|/regex/|} *)
+              | Ppat_var { txt = _; _ }, Pexp_constant (Pconst_string (value, _, _)) when not (String.length value > 0 && value.[0] = '/')
+                ->
+                let transformed = Transformations.transform_let ~mode ~ctx [ vb ] in
+                List.hd transformed :: vbs_acc, bindings_acc
+              (* destructuring - let%mikmatch {|/pattern/|} = expr *)
+              | Ppat_constant (Pconst_string (pattern_str, _, _)), _ ->
+                let new_vb, new_bindings = Transformations.transform_destructuring_let ~mode ~ctx ~loc:vb.pvb_loc pattern_str vb.pvb_expr in
+                new_vb :: vbs_acc, new_bindings @ bindings_acc
+              | _ ->
+                let transformed = Transformations.transform_let ~mode ~ctx [ vb ] in
+                List.hd transformed :: vbs_acc, bindings_acc)
+            ([], acc) vbs
+        in
+
+        let new_item = { item with pstr_desc = Pstr_value (rec_flag, List.rev processed_vbs) } in
+        new_item, collected_bindings
       (* let x = expression (which might contain %mik/%pcre) *)
       | Pstr_value (rec_flag, vbs) ->
         let processed_vbs, collected_bindings =
