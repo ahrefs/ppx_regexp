@@ -71,19 +71,13 @@ let parse_flags s startpos endpos =
 
 main_match_case:
   | p = pattern EOF {
-      let dollar = to_pcre_regex "$" $endpos(p) $endpos($2) in
-      let loc = make_loc $startpos(p) $endpos($2) in
-      simplify_seq ~loc [p; dollar], mikmatch_default_flags
+      p, mikmatch_default_flags
     }
   | SLASH p = pattern SLASH EOF {
-      let dollar = to_pcre_regex "$" $endpos(p) $endpos($3) in
-      let loc = make_loc $startpos(p) $endpos($3) in
-      simplify_seq ~loc [p; dollar], mikmatch_default_flags
+      p, mikmatch_default_flags
     }
   | SLASH p = pattern SLASH flags = IDENT EOF {
-      let dollar = to_pcre_regex "$" $endpos(p) $endpos($3) in
-      let loc = make_loc $startpos(p) $endpos($3) in
-      simplify_seq ~loc [p; dollar], parse_flags flags $startpos(flags) $endpos(flags)
+      p, parse_flags flags $startpos(flags) $endpos(flags)
     }
   | SLASH pattern EOF { unclosed_error "pattern (missing closing '/')" $startpos($1) $endpos }
   | SLASH error { syntax_error "Invalid pattern after opening slash" $startpos($2) $endpos($2) }
