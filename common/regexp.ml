@@ -271,6 +271,11 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
             let k, e = with_loc scan_alt (j + 1) in
             k, Unnamed_subs (idr, e)
           end
+        | 'i' ->
+          if s.[i + 2] = ':' then (
+            let j, e = with_loc scan_alt (i + 3) in
+            j, Caseless e)
+          else fail (i, i + 2) "Invalid caseless group"
         | ':' -> scan_alt (i + 2)
         | '#' -> (try String.index_from s (i + 2) ')', Seq [] with Not_found -> fail (i - 1, i + 1) "Unterminated comment.")
         | _ -> fail (i, i + 2) "Invalid group modifier.")

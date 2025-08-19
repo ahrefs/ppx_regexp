@@ -77,6 +77,7 @@ module Regexp = struct
       | Opt e -> recurse false e
       | Repeat ({ Location.txt = i, _; _ }, e) -> recurse (must_match && i > 0) e
       | Nongreedy e -> recurse must_match e
+      | Caseless e -> recurse must_match e
       | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
       | Capture_as (idr, conv, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, conv, must_match) :: bs)
       | Named_subs (idr, None, conv, e) | Named_subs (_, Some idr, conv, e) ->
@@ -103,6 +104,7 @@ module Regexp = struct
         let e_j = match j_opt with None -> [%expr None] | Some j -> [%expr Some [%e eint ~loc j]] in
         [%expr Re.repn [%e recurse ~ctx e] [%e e_i] [%e e_j]]
       | Nongreedy e -> [%expr Re.non_greedy [%e recurse ~ctx e]]
+      | Caseless e -> [%expr Re.no_case [%e recurse ~ctx e]]
       | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
       | Capture_as (_, _, e) -> [%expr Re.group [%e recurse ~ctx e]]
       | Named_subs (idr, _, _, _) ->
@@ -145,6 +147,7 @@ module Regexp = struct
     | Opt e' -> { e with txt = Opt (squash_codes e') }
     | Repeat (range, e') -> { e with txt = Repeat (range, squash_codes e') }
     | Nongreedy e' -> { e with txt = Nongreedy (squash_codes e') }
+    | Caseless e' -> { e with txt = Caseless (squash_codes e') }
     | Capture e' -> { e with txt = Capture (squash_codes e') }
     | Capture_as (name, j, e') -> { e with txt = Capture_as (name, j, squash_codes e') }
     | Named_subs (name, j, conv, e') -> { e with txt = Named_subs (name, j, conv, squash_codes e') }
@@ -156,7 +159,7 @@ end
 module Parser = struct
   let get_parser mode target = match mode with `Pcre -> Regexp.parse_exn ~target | `Mik -> Regexp.parse_mik_exn ~target
 
-  let extract_bindings ~parser ~ctx s =
+  let run ~parser ~ctx s =
     let r, flags = parser s in
     let r = Regexp.squash_codes r in
     let nG, bs = Regexp.bindings r in
@@ -164,15 +167,26 @@ module Parser = struct
     re, bs, nG, flags
 end
 
-let make_default_rhs ~loc = function
+let make_default_rhs ~mode ~loc = function
   | [] ->
     let open Lexing in
     let pos = loc.Location.loc_start in
+    let pos_end = loc.Location.loc_end in
+    let lnum = eint ~loc pos.pos_lnum in
+    let lnum_end = eint ~loc pos_end.pos_lnum in
     let e0 = estring ~loc pos.pos_fname in
-    let e1 = eint ~loc pos.pos_lnum in
     let e2 = eint ~loc (pos.pos_cnum - pos.pos_bol) in
-    let e = [%expr raise (Match_failure ([%e e0], [%e e1], [%e e2]))] in
-    Util.warn ~loc "A universal case is recommended." e
+    let e2_start = eint ~loc (pos.pos_cnum - pos.pos_bol) in
+    let e2_end = eint ~loc (pos_end.pos_cnum - pos_end.pos_bol) in
+    begin
+      match mode with
+      | `Pcre ->
+        let e = [%expr raise (Match_failure ([%e e0], [%e lnum], [%e e2]))] in
+        Util.warn ~loc "A universal case is recommended for %%pcre." e
+      | `Mik ->
+        let str = [%expr Printf.sprintf "File %s, lines %d-%d, characters %d-%d: String did not match any of the mikmatch regexes."] in
+        [%expr raise (Failure ([%e str] [%e e0] [%e lnum] [%e lnum_end] [%e e2_start] [%e e2_end]))]
+    end
   | default_cases ->
     let transformed =
       List.map
@@ -239,7 +253,7 @@ let transform_cases ~mode ~loc ~ctx cases =
       let re_offset = (loc_end.pos_cnum - loc_start.pos_cnum - String.length re_src) / 2 in
       let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset; pos_lnum = loc_end.pos_lnum } in
       let parser = Parser.get_parser mode `Match ~pos in
-      let re, bs, nG, flags = Parser.extract_bindings ~parser ~ctx re_src in
+      let re, bs, nG, flags = Parser.run ~parser ~ctx re_src in
       let re_str = Pprintast.string_of_expression re in
       re, re_str, nG, bs, case.pc_rhs, case.pc_guard, flags)
   in
@@ -249,15 +263,10 @@ let transform_cases ~mode ~loc ~ctx cases =
       match guard with
       | None ->
         (* no guard: all must be guard-free *)
-        Format.printf "%s, no guard@." re_str;
         List.for_all (fun (_, _, _, _, _, g', _) -> g' = None) group
       | Some _ ->
         (* has guard: needs exact (RE string, flags) match *)
-        List.exists
-          (fun (_, re_str', _, _, _, _, f') ->
-            Format.printf "%s = %s -> %b@." re_str' re_str (re_str' = re_str);
-            re_str = re_str' && flags = f')
-          group
+        List.exists (fun (_, re_str', _, _, _, _, f') -> re_str = re_str' && flags = f') group
     in
 
     let rec group acc current_group = function
@@ -363,7 +372,7 @@ let transform_cases ~mode ~loc ~ctx cases =
   in
 
   let pattern_cases, default_cases = partition_cases cases in
-  let default_rhs = make_default_rhs ~loc default_cases in
+  let default_rhs = make_default_rhs ~mode ~loc default_cases in
 
   pattern_cases |> List.map (parse_pattern ~mode ~ctx) |> create_compilation_groups |> fun groups ->
   let processed = List.mapi process_compilation_group groups in
@@ -378,7 +387,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
       let pos = str_loc.loc_start in
       let mode = if "pcre" = ext then `Pcre else `Mik in
       let parser = Parser.get_parser mode `Match ~pos in
-      let re, bs, nG, flags = Parser.extract_bindings ~parser ~ctx pat in
+      let re, bs, nG, flags = Parser.run ~parser ~ctx pat in
       `Ext (re, nG, bs, case.pc_rhs, case.pc_guard, flags)
     | _ -> `Regular case
   in

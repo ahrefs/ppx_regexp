@@ -12,13 +12,14 @@ and 'a node =
   | Opt of 'a t
   | Repeat of (int * int option) Location.loc * 'a t
   | Nongreedy of 'a t
+  | Caseless of 'a t
   | Capture of 'a t
   | Capture_as of string Location.loc * conv_ty option * 'a t
   | Named_subs of string Location.loc * string Location.loc option * conv_ty option * 'a t
   | Unnamed_subs of string Location.loc * 'a t
   | Pipe_all of string Location.loc * string * 'a t
   | Call of Longident.t Location.loc
-(* TODO: | Case_sense of t | Case_blind of t *)
+(* TODO: | Case_blind of t *)
 
 and conv_ty =
   | Int

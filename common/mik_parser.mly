@@ -54,7 +54,7 @@ let parse_flags s startpos endpos =
 
 %token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS INT
 %token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE EMPTY_STR
-%token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS PIPE
+%token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS PIPE TILDE
 %token INT_CONVERTER FLOAT_CONVERTER EOF
 
 %start <string t * flags> main_match_case
@@ -131,6 +131,9 @@ atom_expr:
     }
   | basic_atom QUESTION {
       wrap_loc $startpos $endpos (Opt $1)
+    }
+  | basic_atom TILDE {
+      wrap_loc $startpos $endpos (Caseless $1)
     }
   | basic_atom LBRACE n = INT RBRACE {
       let n = int_of_string n in
