@@ -52,7 +52,7 @@ let parse_flags s startpos endpos =
   loop 0 mikmatch_default_flags
 %}
 
-%token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS INT FLAGS
+%token <string> CHAR_LITERAL STRING_LITERAL IDENT MOD_IDENT PREDEFINED_CLASS INT
 %token SLASH LPAREN RPAREN LBRACKET RBRACKET CARET LBRACE RBRACE EMPTY_STR
 %token DASH BAR STAR PLUS QUESTION UNDERSCORE COLON EQUAL AS PIPE
 %token INT_CONVERTER FLOAT_CONVERTER EOF
@@ -80,7 +80,7 @@ main_match_case:
       let loc = make_loc $startpos(p) $endpos($3) in
       simplify_seq ~loc [p; dollar], mikmatch_default_flags
     }
-  | SLASH p = pattern SLASH flags = FLAGS EOF {
+  | SLASH p = pattern SLASH flags = IDENT EOF {
       let dollar = to_pcre_regex "$" $endpos(p) $endpos($3) in
       let loc = make_loc $startpos(p) $endpos($3) in
       simplify_seq ~loc [p; dollar], parse_flags flags $startpos(flags) $endpos(flags)
@@ -98,7 +98,7 @@ pattern:
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Pipe_all (name_loc, func, $1))
     }
-  | alt_expr PIPE { missing_error "function name after '|>'" $startpos($2) $endpos }
+  | alt_expr PIPE { missing_error "function name after '>>>'" $startpos($2) $endpos }
   | alt_expr PIPE func_name { missing_error "'as' and result name after function" $startpos($3) $endpos }
   | alt_expr PIPE func_name AS { missing_error "result name after 'as'" $startpos($4) $endpos }
   | { missing_error "pattern expression" $startpos $endpos }
