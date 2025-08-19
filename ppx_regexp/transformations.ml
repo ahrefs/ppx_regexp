@@ -157,7 +157,7 @@ module Regexp = struct
 end
 
 module Parser = struct
-  let get_parser mode target = match mode with `Pcre -> Regexp.parse_exn ~target | `Mik -> Regexp.parse_mik_exn ~target
+  let get_parser ~mode ~target = match mode with `Pcre -> Regexp.parse_exn ~target | `Mik -> Regexp.parse_mik_exn ~target
 
   let run ~parser ~ctx s =
     let r, flags = parser s in
@@ -172,36 +172,47 @@ let make_default_rhs ~mode ~loc = function
     let open Lexing in
     let pos = loc.Location.loc_start in
     let pos_end = loc.Location.loc_end in
-    let lnum = eint ~loc pos.pos_lnum in
-    let lnum_end = eint ~loc pos_end.pos_lnum in
-    let e0 = estring ~loc pos.pos_fname in
-    let e2 = eint ~loc (pos.pos_cnum - pos.pos_bol) in
-    let e2_start = eint ~loc (pos.pos_cnum - pos.pos_bol) in
-    let e2_end = eint ~loc (pos_end.pos_cnum - pos_end.pos_bol) in
+    let file_name = pos.pos_fname in
     begin
       match mode with
       | `Pcre ->
-        let e = [%expr raise (Match_failure ([%e e0], [%e lnum], [%e e2]))] in
+        let file_name = estring ~loc file_name in
+        let char_span = eint ~loc (pos.pos_cnum - pos.pos_bol) in
+        let lnum = eint ~loc pos.pos_lnum in
+        let e = [%expr raise (Match_failure ([%e file_name], [%e lnum], [%e char_span]))] in
         Util.warn ~loc "A universal case is recommended for %%pcre." e
       | `Mik ->
-        let str = [%expr Printf.sprintf "File %s, lines %d-%d, characters %d-%d: String did not match any of the mikmatch regexes."] in
-        [%expr raise (Failure ([%e str] [%e e0] [%e lnum] [%e lnum_end] [%e e2_start] [%e e2_end]))]
+        let char_start = pos.pos_cnum - pos.pos_bol in
+        let char_end = pos_end.pos_cnum - pos_end.pos_bol in
+        let err_msg =
+          if pos.pos_lnum = pos_end.pos_lnum then
+            estring ~loc
+            @@ Printf.sprintf "File %s, line %d, characters %d-%d: String did not match a mikmatch case." pos.pos_fname pos.pos_lnum
+                 char_start char_end
+          else
+            estring ~loc
+            @@ Printf.sprintf "File %s, lines %d-%d, characters %d-%d: String did not match any mikmatch case." file_name pos.pos_lnum
+                 pos_end.pos_lnum char_start char_end
+        in
+        [%expr raise (Failure [%e err_msg])]
     end
   | default_cases ->
     let transformed =
       List.map
-        (fun case ->
-          match case.pc_lhs.ppat_desc with
-          | Ppat_var var ->
-            {
-              case with
-              pc_lhs = ppat_any ~loc;
-              pc_rhs =
-                [%expr
-                  let [%p ppat_var ~loc var] = _ppx_regexp_v in
-                  [%e case.pc_rhs]];
-            }
-          | _ -> case)
+        begin
+          fun case ->
+            match case.pc_lhs.ppat_desc with
+            | Ppat_var var ->
+              {
+                case with
+                pc_lhs = ppat_any ~loc;
+                pc_rhs =
+                  [%expr
+                    let [%p ppat_var ~loc var] = _ppx_regexp_v in
+                    [%e case.pc_rhs]];
+              }
+            | _ -> case
+        end
         default_cases
     in
     begin
@@ -216,7 +227,7 @@ let build_exec_match ~loc ~re_var ~continue_next ~on_match =
 (* Transformations *)
 
 let transform_let ~mode ~ctx =
-  let parser = Parser.get_parser mode `Let in
+  let parser = Parser.get_parser ~mode ~target:`Let in
   List.map
     begin
       fun vb ->
@@ -238,6 +249,42 @@ let transform_let ~mode ~ctx =
         | _ -> vb
     end
 
+let transform_destructuring_let ~mode ~ctx ~loc pattern_str expr =
+  let pos = loc.loc_start in
+  let parser = Parser.get_parser ~mode ~target:`Match ~pos in
+  let re, bs, _, flags = Parser.run ~parser ~ctx pattern_str in
+  let capture_names = List.map (fun (name, _, _, _) -> name) (List.rev bs) in
+
+  let lhs_pattern =
+    match capture_names with
+    | [] -> [%pat? ()]
+    | [ name ] -> ppat_var ~loc name
+    | names -> ppat_tuple ~loc (List.map (fun n -> ppat_var ~loc n) names)
+  in
+
+  let re_var = Util.fresh_var () in
+  let re_binding = Re_comp.compile ~loc re_var [ re, flags ] in
+
+  let on_match =
+    match capture_names with
+    | [] -> [%expr ()]
+    | [ _ ] -> [%expr Re.Group.get _g 1]
+    | names ->
+      let exprs = List.mapi (fun i _ -> [%expr Re.Group.get _g [%e eint ~loc (i + 1)]]) names in
+      pexp_tuple ~loc exprs
+  in
+
+  let default_rhs = [%expr [%e make_default_rhs ~mode ~loc []]] in
+
+  let re_var = pexp_ident ~loc { txt = Lident re_var; loc } in
+  let rhs_expr =
+    [%expr
+      let _ppx_regexp_v = [%e expr] in
+      [%e build_exec_match ~loc ~re_var ~continue_next:default_rhs ~on_match]]
+  in
+
+  { pvb_pat = lhs_pattern; pvb_expr = rhs_expr; pvb_attributes = []; pvb_loc = loc }, [ re_binding ]
+
 let transform_cases ~mode ~loc ~ctx cases =
   let partition_cases cases =
     let rec partition pattern_cases = function
@@ -252,7 +299,7 @@ let transform_cases ~mode ~loc ~ctx cases =
     Ast_pattern.(parse (pstring __')) case.pc_lhs.ppat_loc case.pc_lhs (fun { txt = re_src; loc = { loc_start; loc_end; _ } } ->
       let re_offset = (loc_end.pos_cnum - loc_start.pos_cnum - String.length re_src) / 2 in
       let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset; pos_lnum = loc_end.pos_lnum } in
-      let parser = Parser.get_parser mode `Match ~pos in
+      let parser = Parser.get_parser ~mode ~target:`Match ~pos in
       let re, bs, nG, flags = Parser.run ~parser ~ctx re_src in
       let re_str = Pprintast.string_of_expression re in
       re, re_str, nG, bs, case.pc_rhs, case.pc_guard, flags)
@@ -386,7 +433,7 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
           PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
       let mode = if "pcre" = ext then `Pcre else `Mik in
-      let parser = Parser.get_parser mode `Match ~pos in
+      let parser = Parser.get_parser ~mode ~target:`Match ~pos in
       let re, bs, nG, flags = Parser.run ~parser ~ctx pat in
       `Ext (re, nG, bs, case.pc_rhs, case.pc_guard, flags)
     | _ -> `Regular case
