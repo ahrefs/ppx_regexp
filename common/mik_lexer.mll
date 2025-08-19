@@ -86,6 +86,7 @@ rule token = parse
   | '_' { UNDERSCORE }
   | ':' { COLON }
   | '=' { EQUAL }
+  | '~' { TILDE }
   | "as" { AS }
   | ">>>" { PIPE }
   | "int" { INT_CONVERTER }

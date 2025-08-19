@@ -7,7 +7,10 @@ Accepts `mikmatch` syntax, along with some nice to haves.
 The grammar accepted by this extensions is the following
 
 ```bnf
-<main_match_case> ::= "/" <pattern> "/" EOF
+<main_match_case> ::= <pattern> EOF
+                    | "/" <pattern> "/" <flags> EOF
+
+<flags> ::= "" | "i" <flags> | "u" <flags>
 
 <main_let_expr> ::= <pattern> EOF
 
@@ -24,6 +27,7 @@ The grammar accepted by this extensions is the following
               | <basic_atom> "*"
               | <basic_atom> "+"
               | <basic_atom> "?"
+              | <basic_atom> "~"                         # caseless matching
               | <basic_atom> "{" INT (n) "}"             # match n times
               | <basic_atom> "{" INT (n) "-" INT (m) "}" # match at least n times, at most m times
 
@@ -39,12 +43,12 @@ The grammar accepted by this extensions is the following
                | "(" <pattern> ")"
                | "(" IDENT ")"
                | "(" IDENT "as" IDENT ")"
-               | "(" IDENT "as" IDENT ":" INT_CONVERTER ")"
-               | "(" IDENT "as" IDENT ":" FLOAT_CONVERTER ")"
+               | "(" IDENT "as" IDENT ":" "int" ")"
+               | "(" IDENT "as" IDENT ":" "float" ")"
                | "(" IDENT "as" IDENT ":=" <func_name> ")"
                | "(" <pattern> "as" IDENT ")"
-               | "(" <pattern> "as" IDENT ":" INT_CONVERTER ")"
-               | "(" <pattern> "as" IDENT ":" FLOAT_CONVERTER ")"
+               | "(" <pattern> "as" IDENT ":" "int" ")"
+               | "(" <pattern> "as" IDENT ":" "float" ")"
                | "(" <pattern> "as" IDENT ":=" <func_name> ")"
 
 <func_name> ::= IDENT
@@ -142,13 +146,19 @@ let mk_example name num mode = match mode with
   | Some _ | None -> { name; num; mode = `Default}
 
 let mk_example_re = function%mikmatch
-  | {|/ (['a'-'z'] as name := String.capitalize_ascii) ' ' (digit+ as num : int) ' ' ('a'|'b' as mode)? >>> mk_example as res /|} -> (* (res : example) available here, and all other bound variables *)
+  | {|/ (['a'-'z']~ as name := String.capitalize_ascii) ' ' (digit+ as num : int) ' ' ('a'|'b' as mode)? >>> mk_example as res /|} -> (* (res : example) available here, and all other bound variables *)
   | _ -> ...
 ```
 
-## Case Insensitive Match
+### Default catch-all case
+The PPX generates a default catch-all case if none is provided. This catch-all case executes if none of the RE match cases does, and it raises a `Failure` exception with the location of the function and name of the file where it was raised.
 
-You can use `%mikmatch_i`: `match%mikmatch_i` and `function%mikmatch_i`. (not available at the variable level)
+## Flags
+
+The `/` delimiters are optional, except if flags are needed using the syntax `/ ... / flags`, where `flags` can be
+- `i` for caseless matching
+- `u` for unanchored matching (`%mikmatch` is anchored at the beginning and end by default)
+- or both
 
 ## Alternatives
 ### Defining variables
@@ -159,7 +169,6 @@ let%mikmatch re = {|some regex|}
 let re = {%mikmatch|some regex|}
 ```
 
-No `/` delimiters are needed here.
 
 ### Matching:
 #### `match%mikmatch` and `function%mikmatch`
@@ -172,7 +181,7 @@ function%mikmatch
   | _ -> ...
 ```
 
-This match expression will compile all of the REs in the branches into one, and use marks to find which branch was executed.  
+This match expression will compile all of the REs in the branches into one, with some exceptions around pattern guards, and use marks to find which branch was executed.  
 Efficient if you have multiple branches.
 
 The regexes are anchored both at the beginning, and at the end. So, for example, the first match case will be compiled to `^some regex$`.
@@ -185,12 +194,10 @@ function
   | {%mikmatch|/ some regex /|} -> ...
   ...
   | "another string" -> ...
-  | {%mikmatch_i|/ some regex /|} -> ...
+  | {%mikmatch|/ some regex /|} -> ...
   ...
   | _ -> ...
 ```
 
 This match expression will compile all of the REs **individually**, and test each one in sequence.  
-Recommended if you only matching one RE. It is less efficient than the first option for more than one RE, but allows raw string matching.
-
 It keeps all of the features (guards and such) of the previous extension, explored in [Semantics](#Semantics_and_Examples)

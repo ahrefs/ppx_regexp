@@ -1,19 +1,11 @@
-# PPXes for Working with Regular Expressions
+# PPX for Working with Regular Expressions
 
-This repo provides PPXes providing regular expression-based routing:
+This repo provides a PPX providing regular expression-based routing:
 
 - `ppx_regexp_extended` maps to [re][] with the conventional last-match extraction
   into `string` and `string option`. Two syntaxes for regular expressions available:
   - `pcre`: The syntax of regular PCRE expressions
   - `mikmatch`: Mimics the syntax of the [mikmatch](https://mjambon.github.io/mjambon2016/mikmatch-manual.html) tool
-- `ppx_tyre` maps to [Tyre][tyre] providing typed extraction into options,
-  lists, tuples, objects, and polymorphic variants.
-
-Another difference is that `ppx_regexp` works directly on strings
-essentially hiding the library calls, while `ppx_tyre` provides `Tyre.t` and
-`Tyre.route` which can be composed an applied using the Tyre library.
-
-## `ppx_regexp_extended` - Regular Expression Matching with OCaml Patterns
 
 This syntax extension turns:
 ```ocaml
@@ -30,6 +22,83 @@ It also accepts:
 let%pcre var = {| some regex |}
 (* and *)
 let%mikmatch var = {| some regex |}
+```
+
+### `%mikmatch`
+
+Full [%mikmatch guide](./MIK.md).
+
+#### Quick Links
+- [Variable capture](./MIK.md#variable-capture)
+- [Type conversion](./MIK.md#type-conversion)
+- [Different extensions](./MIK.md#alternatives)
+
+#### Motivational Examples
+
+URL parsing:
+```ocaml
+let parse s =
+  let (scheme, first) =
+    match s.[4] with
+    | ':' -> `Http, 7
+    | 's' -> `Https, 8
+    | _ -> Exn.fail "parse: %S" s
+  in
+  let last = String.index_from s first '/' in
+  let host = String.slice s ~first ~last in
+  let (host,port) =
+    match Stre.splitc host ':' with
+    | exception _ -> host, default_port scheme
+    | (host,port) -> host, int_of_string port
+  in
+  let (path,query,fragment) = make_path @@ String.slice s ~first:last in
+  { scheme; host; port; path; query; fragment }
+
+(* in mikmatch: *)
+
+let parse s =
+  match%mikmatch s with
+  | {|/ "http" ('s' as https)? "://" ([^ '/' ':']+ as host) (":" (digit+ as port : int))? '/'? (_* as rest) /|} ->
+      let scheme = match https with Some _ -> `Https | None -> `Http in
+      let port = match port with Some p -> p | None -> default_port scheme in
+      let path, query, fragment = make_path ("/" ^ rest) in
+      { scheme; host; port; path; query; fragment }
+  | _ -> Exn.fail "Url.parse: %S" s
+
+```
+
+```ocaml
+let rex =
+  let origins = "csv|pdf|html|xlsv|xml"
+  Re2.create_exn (sprintf {|^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)(?:\.(\d+))?\.(%s)\.(\d+)\.(\d+)$|} origins)
+
+let of_string s =
+  try
+    let m = Re2.first_match_exn rex s in
+    let start = Re2.Match.get_exn ~sub:(`Index 1) m |> U.strptime "%Y-%m-%dT%H:%M:%S%z" |> U.timegm in
+    let shard = int_of_string (Re2.Match.get_exn ~sub:(`Index 2) m) in
+    let origin = origin_of_string (Re2.Match.get_exn ~sub:(`Index 3) m) in
+    let partition = int_of_string (Re2.Match.get_exn ~sub:(`Index 4) m) in
+    let worker = int_of_string (Re2.Match.get_exn ~sub:(`Index 5) m) in
+    { start; shard; origin; partition; worker }
+  with _ -> invalid_arg (sprintf "error: %s" s)
+
+(* in mikmatch: *)
+
+let%mikmatch origins = {| "csv" | "pdf" | "html" | "xlsv" | "xml" |}
+
+let of_string s =
+  match%mikmatch s with
+  | {|/ (digit{4} '-' digit{2} '-' digit{2} 'T' digit{2} ':' digit{2} ':' digit{2} 'Z' as timestamp)
+      ('.' (digit+ as shard : int))? 
+      '.' (origins as origin := origin_of_string)
+      '.' (digit+ as partition : int)
+      '.' (digit+ as worker : int) /|} ->
+      let start = U.strptime "%Y-%m-%dT%H:%M:%S%z" timestamp |> U.timegm in
+      let shard = match shard with Some s -> s | None -> 0 in
+      { start; shard; origin; partition; worker }
+  | _ -> invalid_arg (sprintf "error: %s" s)
+
 ```
 
 ### `%pcre`
@@ -57,15 +126,6 @@ The patterns are plain strings of the form accepted by `Re.Pcre`, with the follo
 
 A variable is allowed for the universal case and is bound to the matched
 string.
-
-### `%mikmatch`
-
-Full [%mikmatch guide](./MIK.md).
-
-#### Quick Links
-- [Variable capture](./MIK.md#variable-capture)
-- [Type conversion](./MIK.md#type-conversion)
-- [Different extensions](./MIK.md#alternatives)
 
 ### Example
 
@@ -115,99 +175,7 @@ let () = Lwt_main.run begin
 end
 ```
 
-## `ppx_tyre` - Syntax Support for Tyre Routes
-
-### Typed regular expressions
-
-This PPX compiles
-```ocaml
-[%tyre {|re|}]
-```
-into `'a Tyre.t`.
-
-For instance, We can define a pattern that recognize strings of the form "dim:3x5" like so:
-
-```ocaml
-# open Tyre ;;
-# let dim = [%tyre "dim:(?&int)x(?&int)"] ;;
-val dim : (int * int) Tyre.t
-```
-
-The syntax `(?&id)` allows to call a typed regular expression named `id` of type `'a Tyre.t`, such as `Tyre.int`.
-
-For convenience, you can also use *named* capture groups to name the captured elements.
-```ocaml
-# let dim = [%tyre "dim:(?<x>(?&int))x(?&y:int)"] ;;
-val dim : < x : int; y : int > Tyre.t
-```
-
-Names given using the syntax `(?<foo>re)` will be used for the fields
-of the results. `(?&y:int)` is a shortcut for `(?<y>(?&int))`.
-This can also be used for alternatives, for instance:
-
-```ocaml
-# let id_or_name = [%tyre "id:(?&id:int)|name:(?<name>[[:alnum:]]+)"] ;;
-val id_or_name : [ `id of int | `name of string ] Tyre.t
-```
-
-Expressions of type `Tyre.t` can then be composed as part of bigger regular
-expressions, or compiled with `Tyre.compile`. 
-See [tyre][]'s documentation for details.
-
-### Routes
-
-`ppx_tyre` can also be used for routing, in the style of `ppx_regexp`:
-
-```ocaml
-    function%tyre
-    | {|re1|} -> e1
-    ...
-    | {|reN|} -> eN
-```
-
-is turned into a `'a Type.route`, where `re`, `re1`, ... are regular expressions
-using the same syntax as above. `"re" as v` is considered like `(?<v>re)` and
-`"re1" | "re2"` is turned into a regular expression alternative.
-
-Once routes are defined, matching is done with `Tyre.exec`.
-
-### Details
-
-The syntax follow Perl's syntax:
-
-- `re?` extracts an option of what `re` extracts.
-- `re+`, `re*`, `re{n,m}` extracts a list of what `re` extracts.
-- `(?&qname)` refers to any identifier bound to a typed regular expression
-  of type `'a Tyre.t`.
-- Normal parens are *non-capturing*.
-- There are two ways to capture:
-  - Anonymous capture `(+re)`
-  - Named capture `(?<v>re)`
-- One or more `(?<v>re)` at the top level can be used to bind variables
-  instead of `as ...`.
-- One or more `(?<v>re)` in a sequence extracts an object where each method
-  `v` is bound to what `re` extracts.
-- An alternative with one `(?<v>re)` per branch extracts a polymorphic
-  variant where each constructor `` `v`` receives what `re` extracts as its
-  argument.
-- `(?&v:qname)` is a shortcut for `(?<v>(?&qname))`.
-
 ## Limitations
-
-### (ppx_tyre) No Pattern Guards
-
-Pattern guards are not supported for `ppx_tyre`.
-This is due to the fact that all match cases are combined into a single regular expression, so if one of the
-patterns succeed, the match is committed before we can check the guard
-condition.
-
-`ppx_regexp_extended` gets around this by grouping match cases with the same guards and compiling those together, instead
-of every match case being compiled into one RE. 
-> [!WARNING]
-> There is still a limitation with the guards: if two branches have overlapping REs, and the first has a guard that evaluates to false,
-> then the second branch will not be ran. This is because of a limitation with `ocaml-re`'s Marking machine, it only
-> tests until a mark is found, and doesn't search further.
-
 
 ### No Exhaustiveness Check
 
@@ -223,4 +191,3 @@ file bug reports in the GitHub issue tracker.  Any exception raised by
 generated code except for `Match_failure` is a bug.
 
 [re]: https://github.com/ocaml/ocaml-re
-[tyre]: https://github.com/Drup/tyre
