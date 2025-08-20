@@ -305,10 +305,17 @@ let transform_destructuring_let ~mode ~loc pattern_str expr =
     in
     match List.rev bs with
     | [] -> [%expr ()]
-    | [ (_, _, conv, _) ] -> apply_conv ~loc [%expr Re.Group.get _g 1] conv
     | bs_rev ->
-      let exprs = List.mapi (fun i (_, _, conv, _) -> apply_conv ~loc [%expr Re.Group.get _g [%e eint ~loc (i + 1)]] conv) bs_rev in
-      pexp_tuple ~loc exprs
+      let exprs =
+        List.map
+          begin
+            fun (_, iG, conv, _) ->
+              let group_idx = match iG with None -> 0 | Some i -> i + 1 in
+              apply_conv ~loc [%expr Re.Group.get _g [%e eint ~loc group_idx]] conv
+          end
+          bs_rev
+      in
+      (match exprs with [ expr ] -> expr | _ -> pexp_tuple ~loc exprs)
   in
 
   let default_rhs = [%expr [%e make_default_rhs ~mode ~target:`Let ~loc []]] in
