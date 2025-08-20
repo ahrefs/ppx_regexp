@@ -2,22 +2,7 @@
   (name ppx_regexp)
   (public_name ppx_regexp_extended)
   (kind ppx_rewriter)
-  (modules util transformations regexp_types ppx_regexp regexp mik_parser mik_lexer)
+  (modules util transformations ppx_regexp)
   (preprocess (pps ppxlib.metaquot))
-  (libraries ppxlib re re.perl)
+  (libraries ppx_regexp_lib ppxlib re re.perl)
   (ppx_runtime_libraries re re.perl))
-
-(menhir
- (modules mik_parser))
-
-(ocamllex
- (modules mik_lexer))
-
-(rule (copy ../common/regexp_types.ml regexp_types.ml))
-(rule (copy ../common/regexp_types.mli regexp_types.mli))
-
-(rule (copy ../common/mik_lexer.mll mik_lexer.mll))
-(rule (copy ../common/mik_parser.mly mik_parser.mly))
-
-(rule (copy ../common/regexp.mli regexp.mli))
-(rule (copy ../common/regexp.ml regexp.ml))
