@@ -294,11 +294,20 @@ let transform_destructuring_let ~mode ~loc pattern_str expr =
   let re_binding = Re_comp.compile ~loc re_var [ re, flags ] in
 
   let on_match =
-    match capture_names with
+    let apply_conv ~loc expr = function
+      | None -> expr
+      | Some Regexp_types.Int -> [%expr int_of_string [%e expr]]
+      | Some Float -> [%expr float_of_string [%e expr]]
+      | Some (Func func_name) ->
+        let func_ident = pexp_ident ~loc { txt = Util.extract_qualified_name func_name; loc } in
+        [%expr [%e func_ident] [%e expr]]
+      | Some (Pipe_all_func _) -> Util.error ~loc ">>> not allowed in destructuring let"
+    in
+    match List.rev bs with
     | [] -> [%expr ()]
-    | [ _ ] -> [%expr Re.Group.get _g 1]
-    | names ->
-      let exprs = List.mapi (fun i _ -> [%expr Re.Group.get _g [%e eint ~loc (i + 1)]]) names in
+    | [ (_, _, conv, _) ] -> apply_conv ~loc [%expr Re.Group.get _g 1] conv
+    | bs_rev ->
+      let exprs = List.mapi (fun i (_, _, conv, _) -> apply_conv ~loc [%expr Re.Group.get _g [%e eint ~loc (i + 1)]] conv) bs_rev in
       pexp_tuple ~loc exprs
   in
 
