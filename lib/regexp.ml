@@ -244,33 +244,6 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
           else (
             let k, e = with_loc scan_alt (j + 1) in
             k, Capture_as (idr, None, e))
-        | 'N' ->
-          let j, idr = scan_ident (i + 3) in
-          begin
-            match get j with
-            | '>' ->
-              let k, e = with_loc scan_alt (j + 1) in
-              k, Named_subs (idr, None, None, e)
-            | ' ' ->
-              let j, jdr = scan_ident (j + 1) in
-              if jdr.txt = "as" && get j = ' ' then begin
-                let j, kdr = scan_ident (j + 1) in
-                if get j <> '>' then fail (j, j + 1) "Unbalanced '<'."
-                else begin
-                  let k, e = with_loc scan_alt (j + 1) in
-                  k, Named_subs (idr, Some kdr, None, e)
-                end
-              end
-              else fail (j - 2, j) "Substring name missing."
-            | _ -> fail (i, i + 1) "Unbalanced '<'."
-          end
-        | 'U' ->
-          let j, idr = scan_ident (i + 3) in
-          if get j <> '>' then fail (i, i + 1) "Unbalanced '<'."
-          else begin
-            let k, e = with_loc scan_alt (j + 1) in
-            k, Unnamed_subs (idr, e)
-          end
         | 'i' ->
           if s.[i + 2] = ':' then (
             let j, e = with_loc scan_alt (i + 3) in
