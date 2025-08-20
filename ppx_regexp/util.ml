@@ -15,14 +15,6 @@ module List = struct
   let rec fold f = function [] -> fun acc -> acc | x :: xs -> fun acc -> fold f xs (f x acc)
 end
 
-module Ctx = struct
-  (* name -> parsed value) *)
-  type t = (string, label Regexp_types.t) Hashtbl.t
-
-  let empty () = Hashtbl.create 16
-  let find name ctx = Hashtbl.find_opt ctx name
-end
-
 let fresh_var =
   let c = ref 0 in
   fun () ->
@@ -51,26 +43,6 @@ let extract_qualified_name n =
       | module_name :: rest -> Ldot (build_longident rest, module_name)
     in
     build_longident (List.rev module_path)
-
-let check_unbounded_recursion ~mode var_name content =
-  let contains_regex pattern str =
-    let re = Re.Str.regexp pattern in
-    try
-      Re.Str.search_forward re str 0 |> ignore;
-      true
-    with Not_found -> false
-  in
-  match mode with
-  | `Pcre ->
-    let u = Printf.sprintf {|\(\?U<%s>\)|} var_name in
-    let n = Printf.sprintf {|\(\?N<%s>\)|} var_name in
-    let n_as = Printf.sprintf {|\(\?N<%s as [^>]*>\)|} var_name in
-    contains_regex u content || contains_regex n content || contains_regex n_as content
-  | `Mik ->
-    let u = Printf.sprintf {|\(\b%s\b\)|} var_name in
-    let n_as = Printf.sprintf {|\(\b%s\b as [^)]*\)|} var_name in
-    let n_as_conv = Printf.sprintf {|\(\b%s\b as [^)]*:[^)]*\)|} var_name in
-    contains_regex u content || contains_regex n_as content || contains_regex n_as_conv content
 
 let pp_conv = function
   | None -> "NONE"
@@ -106,10 +78,6 @@ let rec debug_re indent (ast : string Regexp_types.t) =
     Printf.printf "%s)\n" spaces
   | Capture_as (name, conv, expr) ->
     Printf.printf "%sCapture_as(%s, %s,\n" spaces (pp_conv conv) name.txt;
-    debug_re (indent + 2) expr;
-    Printf.printf "%s)\n" spaces
-  | Named_subs (name, alias, conv, expr) ->
-    Printf.printf "%sNamed_subs(%s, %s, %s,\n" spaces name.txt (pp_conv conv) (match alias with Some a -> a.txt | None -> "None");
     debug_re (indent + 2) expr;
     Printf.printf "%s)\n" spaces
   | Call longident -> Printf.printf "%sCall(%s)\n" spaces (match longident.txt with Longident.Lident s -> s | _ -> "complex")

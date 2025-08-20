@@ -80,48 +80,38 @@ module Regexp = struct
       | Caseless e -> recurse must_match e
       | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
       | Capture_as (idr, conv, e) -> fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, conv, must_match) :: bs)
-      | Named_subs (idr, None, conv, e) | Named_subs (_, Some idr, conv, e) ->
-        fun (nG, bs) -> recurse must_match e (nG + 1, (idr, Some nG, conv, must_match) :: bs)
-      | Unnamed_subs (_, e) -> recurse must_match e
       | Pipe_all (res, func, e) ->
         fun (nG, bs) ->
           let nG', inner_bs = recurse must_match e (nG, []) in
           nG', ((res, None, Some (Pipe_all_func func), must_match) :: inner_bs) @ bs
-      | Call _ -> Util.error ~loc "(&...) is not implemented for %%pcre and %%mikmatch."
+      | Call _ -> fun (nG, bs) -> nG + 1, bs
     in
     function { Location.txt = Capture_as (idr, conv, e); _ } -> recurse true e (0, [ idr, None, conv, true ]) | e -> recurse true e (0, [])
 
-  let to_re_expr ~ctx =
-    let rec recurse ~ctx (e' : _ Location.loc) =
+  let to_re_expr ~in_let =
+    let rec recurse (e' : _ Location.loc) =
       let loc = e'.Location.loc in
       match e'.Location.txt with
       | Code s -> [%expr Re.Perl.re [%e estring ~loc s]]
-      | Seq es -> [%expr Re.seq [%e elist ~loc (List.map (recurse ~ctx) es)]]
-      | Alt es -> [%expr Re.alt [%e elist ~loc (List.map (recurse ~ctx) es)]]
-      | Opt e -> [%expr Re.opt [%e recurse ~ctx e]]
+      | Seq es -> [%expr Re.seq [%e elist ~loc (List.map recurse es)]]
+      | Alt es -> [%expr Re.alt [%e elist ~loc (List.map recurse es)]]
+      | Opt e -> [%expr Re.opt [%e recurse e]]
       | Repeat ({ Location.txt = i, j_opt; _ }, e) ->
         let e_i = eint ~loc i in
         let e_j = match j_opt with None -> [%expr None] | Some j -> [%expr Some [%e eint ~loc j]] in
-        [%expr Re.repn [%e recurse ~ctx e] [%e e_i] [%e e_j]]
-      | Nongreedy e -> [%expr Re.non_greedy [%e recurse ~ctx e]]
-      | Caseless e -> [%expr Re.no_case [%e recurse ~ctx e]]
+        [%expr Re.repn [%e recurse e] [%e e_i] [%e e_j]]
+      | Nongreedy e -> [%expr Re.non_greedy [%e recurse e]]
+      | Caseless e -> [%expr Re.no_case [%e recurse e]]
       | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
-      | Capture_as (_, _, e) -> [%expr Re.group [%e recurse ~ctx e]]
-      | Named_subs (idr, _, _, _) ->
-        let content = get_substitution ~loc ~ctx idr in
-        [%expr Re.group [%e recurse ~ctx content]]
-      | Unnamed_subs (idr, _) ->
-        let content = get_substitution ~loc ~ctx idr in
-        recurse ~ctx content
-      | Pipe_all (_, _, e) -> recurse ~ctx e
-      | Call _ -> Util.error ~loc "Call is not allowed for %%pcre and %%mikmatch."
-    and get_substitution ~loc ~ctx idr =
-      let var_name = idr.txt in
-      match Util.Ctx.find var_name ctx with
-      | Some value -> value
-      | None -> Util.error ~loc "Variable '%s' not found. %%pcre and %%mikmatch only support global let bindings for substitution." var_name
+      | Capture_as (_, _, e) -> [%expr Re.group [%e recurse e]]
+      | Pipe_all (_, _, e) -> recurse e
+      | Call lid ->
+        (* Use the Call node's own location, not the parent's location *)
+        let call_loc = lid.loc in
+        let ld = { txt = lid.txt; loc = call_loc } in
+        if in_let then pexp_ident ~loc:call_loc ld else [%expr Re.group [%e pexp_ident ~loc:call_loc ld]]
     in
-    function { Location.txt = Capture_as (_, _, e); _ } -> recurse ~ctx e | e -> recurse ~ctx e
+    function { Location.txt = Capture_as (_, _, e); _ } -> recurse e | e -> recurse e
 
   let rec squash_codes (e : _ Location.loc) : _ Location.loc =
     let open Location in
@@ -150,20 +140,63 @@ module Regexp = struct
     | Caseless e' -> { e with txt = Caseless (squash_codes e') }
     | Capture e' -> { e with txt = Capture (squash_codes e') }
     | Capture_as (name, j, e') -> { e with txt = Capture_as (name, j, squash_codes e') }
-    | Named_subs (name, j, conv, e') -> { e with txt = Named_subs (name, j, conv, squash_codes e') }
-    | Unnamed_subs (name, e') -> { e with txt = Unnamed_subs (name, squash_codes e') }
     | Pipe_all (r, f, e') -> { e with txt = Pipe_all (r, f, squash_codes e') }
     | Call _ -> e
+
+  let relocate ~pos e =
+    let open Location in
+    let adjust_loc loc =
+      if loc = Location.none then loc
+      else
+        {
+          loc with
+          loc_start =
+            {
+              pos_fname = pos.pos_fname;
+              pos_lnum = pos.pos_lnum + loc.loc_start.pos_lnum - 1;
+              (* -1 because parser starts at line 1 *)
+              pos_cnum = pos.pos_cnum + loc.loc_start.pos_cnum;
+              pos_bol = pos.pos_bol;
+            };
+          loc_end =
+            {
+              pos_fname = pos.pos_fname;
+              pos_lnum = pos.pos_lnum + loc.loc_end.pos_lnum - 1;
+              pos_cnum = pos.pos_cnum + loc.loc_end.pos_cnum;
+              pos_bol = pos.pos_bol;
+            };
+        }
+    in
+
+    let rec recurse (node : _ Location.loc) =
+      let new_loc = adjust_loc node.loc in
+      let new_txt =
+        match node.txt with
+        | Code s -> Code s
+        | Seq es -> Seq (List.map recurse es)
+        | Alt es -> Alt (List.map recurse es)
+        | Opt e -> Opt (recurse e)
+        | Repeat (range, e) -> Repeat ({ range with loc = adjust_loc range.loc }, recurse e)
+        | Nongreedy e -> Nongreedy (recurse e)
+        | Caseless e -> Caseless (recurse e)
+        | Capture e -> Capture (recurse e)
+        | Capture_as (name, conv, e) -> Capture_as ({ name with loc = adjust_loc name.loc }, conv, recurse e)
+        | Pipe_all (name, func, e) -> Pipe_all ({ name with loc = adjust_loc name.loc }, func, recurse e)
+        | Call lid -> Call { lid with loc = adjust_loc lid.loc }
+      in
+      { txt = new_txt; loc = new_loc }
+    in
+    recurse e
 end
 
 module Parser = struct
-  let get_parser ~mode ~target = match mode with `Pcre -> Regexp.parse_exn ~target | `Mik -> Regexp.parse_mik_exn ~target
+  let get_parser ~mode ~target ~pos = match mode with `Pcre -> Regexp.parse_exn ~target ~pos | `Mik -> Regexp.parse_mik_exn ~target ~pos
 
-  let run ~parser ~ctx s =
+  let run ~parser ~target ~pos s =
     let r, flags = parser s in
-    let r = Regexp.squash_codes r in
+    let r = Regexp.(relocate ~pos @@ squash_codes r) in
     let nG, bs = Regexp.bindings r in
-    let re = Regexp.to_re_expr ~ctx r in
+    let re = Regexp.to_re_expr ~in_let:(target = `Let) r in
     re, bs, nG, flags
 end
 
@@ -231,33 +264,23 @@ let build_exec_match ~loc ~re_var ~continue_next ~on_match =
 
 (* Transformations *)
 
-let transform_let ~mode ~ctx =
+let transform_let ~mode vb =
   let parser = Parser.get_parser ~mode ~target:`Let in
-  List.map
-    begin
-      fun vb ->
-        match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
-        | Ppat_var { txt = var_name; loc }, Pexp_constant (Pconst_string (value, _, _)) ->
-          if Util.check_unbounded_recursion ~mode var_name value then Util.error ~loc "Unbounded recursion detected!"
-          else begin
-            let string_loc = vb.pvb_expr.pexp_loc in
-            let pos = string_loc.loc_start in
-            let pos = { pos with pos_cnum = pos.pos_cnum + 2 } in
-            let parsed, _flags = parser ~pos value in
-            Hashtbl.replace ctx var_name parsed;
-            let warning_attr =
-              attribute ~loc ~name:{ txt = "ocaml.warning"; loc }
-                ~payload:(PStr [ { pstr_desc = Pstr_eval (estring ~loc "-32", []); pstr_loc = loc } ])
-            in
-            { vb with pvb_attributes = warning_attr :: vb.pvb_attributes }
-          end
-        | _ -> vb
-    end
+  match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+  | Ppat_var { txt = _; _ }, Pexp_constant (Pconst_string (value, _, _)) ->
+    let pos = vb.pvb_loc.loc_start in
+    let parsed, _flags = parser ~pos value in
+    let parsed = Regexp.squash_codes parsed in
+    let re_expr = Regexp.to_re_expr ~in_let:true parsed in
+    let expr = [%expr [%e re_expr]] in
+    { vb with pvb_expr = expr }
+  | _ -> vb
 
-let transform_destructuring_let ~mode ~ctx ~loc pattern_str expr =
+let transform_destructuring_let ~mode ~loc pattern_str expr =
+  let target = `Match in
   let pos = loc.loc_start in
-  let parser = Parser.get_parser ~mode ~target:`Match ~pos in
-  let re, bs, _, flags = Parser.run ~parser ~ctx pattern_str in
+  let parser = Parser.get_parser ~mode ~target ~pos in
+  let re, bs, _, flags = Parser.run ~parser ~target ~pos pattern_str in
   let capture_names = List.map (fun (name, _, _, _) -> name) (List.rev bs) in
 
   let lhs_pattern =
@@ -290,7 +313,8 @@ let transform_destructuring_let ~mode ~ctx ~loc pattern_str expr =
 
   { pvb_pat = lhs_pattern; pvb_expr = rhs_expr; pvb_attributes = []; pvb_loc = loc }, [ re_binding ]
 
-let transform_cases ~mode ~loc ~ctx cases =
+let transform_cases ~mode ~loc cases =
+  let target = `Match in
   let partition_cases cases =
     let rec partition pattern_cases = function
       | [] -> List.rev pattern_cases, []
@@ -300,12 +324,12 @@ let transform_cases ~mode ~loc ~ctx cases =
     partition [] cases
   in
 
-  let parse_pattern ~mode ~ctx case =
+  let parse_pattern ~mode case =
     Ast_pattern.(parse (pstring __')) case.pc_lhs.ppat_loc case.pc_lhs (fun { txt = re_src; loc = { loc_start; loc_end; _ } } ->
       let re_offset = (loc_end.pos_cnum - loc_start.pos_cnum - String.length re_src) / 2 in
-      let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset; pos_lnum = loc_end.pos_lnum } in
-      let parser = Parser.get_parser ~mode ~target:`Match ~pos in
-      let re, bs, nG, flags = Parser.run ~parser ~ctx re_src in
+      let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset } in
+      let parser = Parser.get_parser ~mode ~target ~pos in
+      let re, bs, nG, flags = Parser.run ~parser ~target ~pos re_src in
       let re_str = Pprintast.string_of_expression re in
       re, re_str, nG, bs, case.pc_rhs, case.pc_guard, flags)
   in
@@ -431,12 +455,13 @@ let transform_cases ~mode ~loc ~ctx cases =
   let default_rhs = make_default_rhs ~mode ~target:`Match ~loc default_cases in
   if pattern_cases = [] then default_rhs, [] (* no patterns, no need for match cascading *)
   else begin
-    pattern_cases |> List.map (parse_pattern ~mode ~ctx) |> create_compilation_groups |> fun groups ->
+    pattern_cases |> List.map (parse_pattern ~mode) |> create_compilation_groups |> fun groups ->
     let processed = List.mapi process_compilation_group groups in
     generate_code groups processed default_rhs
   end
 
-let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
+let transform_mixed_match ~loc ?matched_expr cases acc =
+  let target = `Match in
   let aux case =
     match case.pc_lhs.ppat_desc with
     | Ppat_extension
@@ -444,8 +469,8 @@ let transform_mixed_match ~loc ~ctx ?matched_expr cases acc =
           PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pat, str_loc, _)); _ }, _); _ } ] ) ->
       let pos = str_loc.loc_start in
       let mode = if "pcre" = ext then `Pcre else `Mik in
-      let parser = Parser.get_parser ~mode ~target:`Match ~pos in
-      let re, bs, nG, flags = Parser.run ~parser ~ctx pat in
+      let parser = Parser.get_parser ~mode ~target ~pos in
+      let re, bs, nG, flags = Parser.run ~parser ~pos ~target pat in
       `Ext (re, nG, bs, case.pc_rhs, case.pc_guard, flags)
     | _ -> `Regular case
   in

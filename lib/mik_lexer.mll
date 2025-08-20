@@ -57,7 +57,6 @@ let needs_escape = function
   | _ -> false
 }
 
-
 let whitespace = [' ' '\t' '\r']
 let lowercase = ['a'-'z']
 let uppercase = ['A'-'Z']

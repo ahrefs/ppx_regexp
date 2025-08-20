@@ -39,6 +39,18 @@ let missing_error what startpos endpos =
 let unclosed_error what startpos endpos =
   syntax_error (Printf.sprintf "Unclosed %s" what) startpos endpos
 
+let string_to_longident s =
+  let open Ppxlib_ast.Ast in
+  match String.split_on_char '.' s with
+  | [] -> invalid_arg "string_to_longident: empty string"
+  | [ x ] -> Lident x
+  | x :: xs -> List.fold_left (fun acc s -> Ldot (acc, s)) (Lident x) xs
+
+let last_component s =
+  match List.rev (String.split_on_char '.' s) with
+  | [] -> s
+  | hd :: _ -> hd
+
 let parse_flags s startpos endpos =
   let rec loop i flags =
     if i >= String.length s then flags
@@ -88,13 +100,13 @@ main_let_expr:
 
 pattern:
   | alt_expr { $1 }
-  | alt_expr PIPE func = func_name AS name = IDENT {
+  | alt_expr PIPE func = ident AS name = IDENT {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Pipe_all (name_loc, func, $1))
     }
   | alt_expr PIPE { missing_error "function name after '>>>'" $startpos($2) $endpos }
-  | alt_expr PIPE func_name { missing_error "'as' and result name after function" $startpos($3) $endpos }
-  | alt_expr PIPE func_name AS { missing_error "result name after 'as'" $startpos($4) $endpos }
+  | alt_expr PIPE ident { missing_error "'as' and result name after function" $startpos($3) $endpos }
+  | alt_expr PIPE ident AS { missing_error "result name after 'as'" $startpos($4) $endpos }
   | { missing_error "pattern expression" $startpos $endpos }
 
 alt_expr:
@@ -171,10 +183,9 @@ basic_atom:
   | PREDEFINED_CLASS {
       to_pcre_regex $1 $startpos $endpos
     }
-  | IDENT {
-      let ident_loc = wrap_loc $startpos $endpos $1 in
-      let pattern_node = to_pcre_regex $1 $startpos $endpos in
-      wrap_loc $startpos $endpos (Unnamed_subs (ident_loc, pattern_node))
+  | IDENT | MOD_IDENT {
+      let ident_loc = wrap_loc $startpos $endpos (string_to_longident $1) in
+      wrap_loc $startpos $endpos (Call ident_loc)
     }
 
   | LBRACKET char_set RBRACKET {
@@ -190,54 +201,69 @@ basic_atom:
   | LBRACKET char_set { unclosed_error "character set (missing ']')" $startpos($1) $endpos }
   | LBRACKET error { syntax_error "Invalid character set" $startpos $endpos }
 
+  | LPAREN id = IDENT RPAREN
+  | LPAREN id = MOD_IDENT RPAREN {
+      (* (word) -> captures the result of calling 'word' pattern *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(id) $endpos(id) (last_component id) in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, None, call_node))
+    }
+  | LPAREN IDENT AS RPAREN | LPAREN MOD_IDENT AS RPAREN { missing_error "name after 'as'" $startpos($3) $endpos($4) }
+  | LPAREN id = IDENT AS name = IDENT RPAREN
+  | LPAREN id = MOD_IDENT AS name = IDENT RPAREN {
+      (* (word as w) -> captures the result of calling 'word' as 'w' *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, None, call_node))
+    }
+  | LPAREN IDENT AS IDENT COLON RPAREN
+  | LPAREN IDENT AS MOD_IDENT COLON RPAREN {
+      missing_error "type converter after ':'" $startpos($5) $endpos($6) 
+    }
+  | LPAREN id = IDENT AS name = IDENT COLON INT_CONVERTER RPAREN
+  | LPAREN id = MOD_IDENT AS name = IDENT COLON INT_CONVERTER RPAREN {
+      (* (digits as n : int) -> captures 'digits' pattern as 'n' converted to int *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some Int, call_node))
+    }
+  | LPAREN id = IDENT AS name = IDENT COLON FLOAT_CONVERTER RPAREN
+  | LPAREN id = MOD_IDENT AS name = IDENT COLON FLOAT_CONVERTER RPAREN {
+      (* (number as f : float) -> captures 'number' pattern as 'f' converted to float *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some Float, call_node))
+    }
+  | LPAREN id = IDENT AS name = IDENT COLON EQUAL func = ident RPAREN
+  | LPAREN id = MOD_IDENT AS name = IDENT COLON EQUAL func = ident RPAREN {
+      (* (text as t := process) -> captures 'text' pattern as 't' processed by function *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func func), call_node))
+    }
+  | LPAREN IDENT AS IDENT EOF?
+  | LPAREN MOD_IDENT AS IDENT EOF? {
+      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4)
+    }
+  | LPAREN IDENT AS IDENT COLON INT_CONVERTER EOF?
+  | LPAREN MOD_IDENT AS IDENT COLON INT_CONVERTER EOF? {
+      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
+    }
+  | LPAREN IDENT AS IDENT COLON FLOAT_CONVERTER EOF?
+  | LPAREN MOD_IDENT AS IDENT COLON FLOAT_CONVERTER EOF? {
+      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
+    }
+
   | LPAREN pattern RPAREN {
       $2
     }
   | LPAREN RPAREN { missing_error "pattern inside parentheses" $startpos $endpos }
   | LPAREN pattern EOF? { unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($2) }
-
-  | LPAREN IDENT RPAREN {
-      let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
-      let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
-      wrap_loc $startpos $endpos (Named_subs (ident_loc, None, None, pattern_node))
-    }
-  | LPAREN IDENT AS RPAREN { missing_error "name after 'as'" $startpos($3) $endpos($4) }
-  | LPAREN IDENT AS name = IDENT RPAREN {
-      let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
-      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
-      let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
-      wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, None, pattern_node))
-    }
-  | LPAREN IDENT AS IDENT COLON RPAREN {
-      missing_error "type converter after ':'" $startpos($5) $endpos($6) 
-    }
-  | LPAREN IDENT AS name = IDENT COLON INT_CONVERTER RPAREN {
-      let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
-      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
-      let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
-      wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, Some Int, pattern_node))
-    }
-  | LPAREN IDENT AS name = IDENT COLON FLOAT_CONVERTER RPAREN {
-      let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
-      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
-      let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
-      wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, Some Float, pattern_node))
-    }
-  | LPAREN IDENT AS name = IDENT COLON EQUAL func = func_name RPAREN {
-      let ident_loc = wrap_loc $startpos($2) $endpos($2) $2 in
-      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
-      let pattern_node = to_pcre_regex $2 $startpos($2) $endpos($2) in
-      wrap_loc $startpos $endpos (Named_subs (ident_loc, Some name_loc, Some (Func func), pattern_node))
-    }
-  | LPAREN IDENT AS IDENT EOF? { 
-      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4)
-    }
-  | LPAREN IDENT AS IDENT COLON INT_CONVERTER EOF? {
-      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
-    }
-  | LPAREN IDENT AS IDENT COLON FLOAT_CONVERTER EOF? {
-      unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
-    }
 
   | LPAREN pattern AS RPAREN { missing_error "capture name after 'as'" $startpos($3) $endpos($4) }
   | LPAREN pattern AS name = IDENT RPAREN {
@@ -258,7 +284,7 @@ basic_atom:
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some Float, $2))
     }
-  | LPAREN pattern AS name = IDENT COLON EQUAL func = func_name RPAREN {
+  | LPAREN pattern AS name = IDENT COLON EQUAL func = ident RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func func), $2))
     }
@@ -272,10 +298,9 @@ basic_atom:
       unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
     }
 
-
   | LPAREN error { syntax_error "Invalid expression in parentheses" $startpos($2) $endpos }
 
-func_name:
+ident:
   | IDENT { $1 }
   | MOD_IDENT { $1 }
 
