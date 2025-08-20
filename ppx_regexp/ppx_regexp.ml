@@ -85,45 +85,50 @@ let transformation =
 
     method! expression e_ext acc =
       let e_ext, acc = super#expression e_ext acc in
-      let make_transformations ~mode ~loc = function
-        | Pexp_function cases ->
-          let cases, binding = Transformations.transform_cases ~mode ~loc cases in
-          [%expr fun _ppx_regexp_v -> [%e cases]], binding @ acc
-        | Pexp_match (e, cases) ->
-          let cases, binding = Transformations.transform_cases ~mode ~loc cases in
-          ( [%expr
-              let _ppx_regexp_v = [%e e] in
-              [%e cases]],
-            binding @ acc )
-        | _ ->
-          Util.error ~loc
-            "[%%pcre] and [%%mikmatch] only apply to match, function, global let declarations of strings, and let destructuring."
+      let has_ext_case =
+        List.exists
+          begin
+            fun case -> match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "pcre" | "mikmatch"; _ }, _) -> true | _ -> false
+          end
       in
       match e_ext.pexp_desc with
       (* match%mikmatch/match%pcre and function%mikmatch/function%pcre, mikmatch anchored *)
       | Pexp_extension ({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (e, _); _ } ]) ->
-        let mode = if "pcre" = ext then `Pcre else `Mik in
+        let mode = if ext = "pcre" then `Pcre else `Mik in
         let loc = e.pexp_loc in
-        make_transformations ~mode ~loc e.pexp_desc
+        begin
+          match e.pexp_desc with
+          | Pexp_function cases ->
+            let cases, binding = Transformations.transform_cases ~mode ~loc cases in
+            [%expr fun _ppx_regexp_v -> [%e cases]], binding @ acc
+          | Pexp_match (e, cases) ->
+            let cases, binding = Transformations.transform_cases ~mode ~loc cases in
+            ( [%expr
+                let _ppx_regexp_v = [%e e] in
+                [%e cases]],
+              binding @ acc )
+          | Pexp_let (rec_flag, vbs, body) ->
+            let processed_vbs, new_bindings =
+              List.fold_left
+                (fun (vbs_acc, bindings_acc) vb ->
+                  match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+                  | Ppat_constant (Pconst_string (pattern_str, _, _)), _ ->
+                    let new_vb, new_bindings = Transformations.transform_destructuring_let ~mode ~loc:vb.pvb_loc pattern_str vb.pvb_expr in
+                    new_vb :: vbs_acc, new_bindings @ bindings_acc
+                  | _ ->
+                    Util.error ~loc
+                      "[%%pcre] and [%%mikmatch] only apply to match, function, global let declarations of strings, and let destructuring.")
+                ([], []) vbs
+            in
+            pexp_let ~loc rec_flag (List.rev processed_vbs) body, new_bindings @ acc
+          | _ ->
+            Util.error ~loc
+              "[%%pcre] and [%%mikmatch] only apply to match, function, global let declarations of strings, and let destructuring."
+        end
       (* match smth with | {%mikmatch|some regex|} -> ...*)
-      | Pexp_match (matched_expr, cases) ->
-        let has_ext_case =
-          List.exists
-            begin
-              fun case -> match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "pcre" | "mikmatch"; _ }, _) -> true | _ -> false
-            end
-            cases
-        in
-        if has_ext_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~matched_expr cases acc else e_ext, acc
-      | Pexp_function cases ->
-        let has_ext_case =
-          List.exists
-            begin
-              fun case -> match case.pc_lhs.ppat_desc with Ppat_extension ({ txt = "pcre" | "mikmatch"; _ }, _) -> true | _ -> false
-            end
-            cases
-        in
-        if has_ext_case then Transformations.transform_mixed_match ~loc:e_ext.pexp_loc cases acc else e_ext, acc
+      | Pexp_match (matched_expr, cases) when has_ext_case cases ->
+        Transformations.transform_mixed_match ~loc:e_ext.pexp_loc ~matched_expr cases acc
+      | Pexp_function cases when has_ext_case cases -> Transformations.transform_mixed_match ~loc:e_ext.pexp_loc cases acc
       | _ -> e_ext, acc
   end
 
