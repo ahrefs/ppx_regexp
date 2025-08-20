@@ -42,7 +42,7 @@ let parse s =
     match s.[4] with
     | ':' -> `Http, 7
     | 's' -> `Https, 8
-    | _ -> Exn.fail "parse: %S" s
+    | _ -> failwith "parse"
   in
   let last = String.index_from s first '/' in
   let host = String.slice s ~first ~last in
@@ -51,8 +51,7 @@ let parse s =
     | exception _ -> host, default_port scheme
     | (host,port) -> host, int_of_string port
   in
-  let (path,query,fragment) = make_path @@ String.slice s ~first:last in
-  { scheme; host; port; path; query; fragment }
+  ...
 
 (* in mikmatch: *)
 
@@ -61,9 +60,8 @@ let parse s =
   | {|/ "http" ('s' as https)? "://" ([^ '/' ':']+ as host) (":" (digit+ as port : int))? '/'? (_* as rest) /|} ->
       let scheme = match https with Some _ -> `Https | None -> `Http in
       let port = match port with Some p -> p | None -> default_port scheme in
-      let path, query, fragment = make_path ("/" ^ rest) in
-      { scheme; host; port; path; query; fragment }
-  | _ -> Exn.fail "Url.parse: %S" s
+      ...
+  | _ -> failwith "parse"
 
 ```
 
@@ -110,16 +108,12 @@ The patterns are plain strings of the form accepted by `Re.Pcre`, with the follo
     the whole pattern matches, and `string option` if the variable is bound
     to or nested below an optionally matched group.
 
-  - `(N?<var>)` gets substituted by the value of the globally defined string variable named `var`,
+  - `(?&var)` refers to any identifier bound to a typed regular expression of type `'a Re.t`
     and binds whatever it matches as `var`.
     The type of `var` will be the same as `(?<var>...)`.
 
-  - `(N?<var as name>)` gets substituted by the value of the globally defined string variable named `var`,
-    and binds whatever it matches as `name`.
+  - `(?&name:var>)` same as above but binds whatever it matches as `name`. (shortcut for `(?<v>(?&qname))`)
     The type of `name` will be the same as `(?<var>...)`.
-
-  - `(U?<var>)` gets substituted by the value of the globally defined string variable named `var`,
-    and does not bind its match to any name.
 
   - `?<var>` at the start of a pattern binds group 0 as `var : string`.
     This may not be the full string if the pattern is unanchored.
