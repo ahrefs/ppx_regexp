@@ -40,9 +40,8 @@ below an optionally matched group.
 
 Additional extensions:
 
-- `(?N<var>)` and `(?N<var as name>)` provide named substitution, and make the
+- `(?&var)` and `(?&name:var)` provide named substitution, and make the
 matched substring available in the right-hand side of match cases
-- `(?U<var>)` marks groups whose substrings are not needed in the right-hand side
 - `let%pcre name = {|re|}` defines reusable patterns for use within `(?U/N<name>)` patterns
 - `match%mikmatch` supports mikmatch-style syntax with typed captures and pattern
 composition, along with `let%mikmatch` for defining reusable patterns

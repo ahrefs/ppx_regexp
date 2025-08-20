@@ -110,16 +110,12 @@ The patterns are plain strings of the form accepted by `Re.Pcre`, with the follo
     the whole pattern matches, and `string option` if the variable is bound
     to or nested below an optionally matched group.
 
-  - `(N?<var>)` gets substituted by the value of the globally defined string variable named `var`,
+  - `(?&var)` refers to any identifier bound to a typed regular expression of type `'a Re.t`
     and binds whatever it matches as `var`.
     The type of `var` will be the same as `(?<var>...)`.
 
-  - `(N?<var as name>)` gets substituted by the value of the globally defined string variable named `var`,
-    and binds whatever it matches as `name`.
+  - `(?&name:var>)` same as above but binds whatever it matches as `name`. (shortcut for `(?<v>(?&qname))`)
     The type of `name` will be the same as `(?<var>...)`.
-
-  - `(U?<var>)` gets substituted by the value of the globally defined string variable named `var`,
-    and does not bind its match to any name.
 
   - `?<var>` at the start of a pattern binds group 0 as `var : string`.
     This may not be the full string if the pattern is unanchored.
