@@ -362,11 +362,12 @@ let transform_cases ~mode ~loc cases =
     in
 
     let rec group acc current_group = function
-      | [] -> if current_group = [] then List.rev acc else List.rev (current_group :: acc)
+      | [] -> if current_group = [] then List.rev acc else List.rev (List.rev current_group :: acc)
       | case :: rest ->
         if current_group = [] || can_merge_into_group case current_group then group acc (case :: current_group) rest
         else group (List.rev current_group :: acc) [ case ] rest
     in
+
     group [] [] parsed_cases
   in
 
@@ -378,10 +379,11 @@ let transform_cases ~mode ~loc cases =
         let handlers = nG, bs, rhs, guard in
         let re_data = re, flags in
         match List.assoc_opt key patterns with
-        | Some (re_data, existing) -> (key, (re_data, handlers :: existing)) :: List.remove_assoc key patterns
+        | Some (re_data, existing) ->
+          (key, (re_data, existing @ [ handlers ])) :: List.remove_assoc key patterns (* Append instead of prepend *)
         | None -> (key, (re_data, [ handlers ])) :: patterns
       in
-      List.fold_left add_case [] cases |> List.map (fun ((_, _), (re_data, handlers)) -> re_data, List.rev handlers) |> List.rev
+      List.fold_left add_case [] cases |> List.map (fun ((_, _), (re_data, handlers)) -> re_data, handlers) |> List.rev
     in
 
     let add_offsets patterns =
