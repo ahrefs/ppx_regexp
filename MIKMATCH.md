@@ -73,7 +73,7 @@ Where `PREDEFINED_CLASS` is one of:
 ### Variable substitution
 ```ocaml
 let%mikmatch re1 = {| "hello" |}
-let%mikmatch re2 = {| re1 "world" |}
+let%mikmatch re2 = {| re1 ' ' "world" |}
 
 let do_something = function%mikmatch
   | {|/ ... (re2) ... /|} -> ...
@@ -81,7 +81,7 @@ let do_something = function%mikmatch
 
 (* will expand to *)
 let do_something = function%mikmatch
-  | {|/ ... ("hello" "world") ... /|} -> ...
+  | {|/ ... ("hello" ' ' "world") ... /|} -> ...
   | _ -> ...
 ```
 

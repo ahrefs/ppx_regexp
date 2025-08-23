@@ -26,7 +26,7 @@ let%mikmatch var = {| some regex |}
 
 ### `%mikmatch`
 
-Full [%mikmatch guide](./MIK.md).
+Full [%mikmatch guide](./MIKMATCH.md).
 
 #### Quick Links
 - [Variable capture](./MIK.md#variable-capture)
