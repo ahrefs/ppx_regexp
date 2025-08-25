@@ -187,6 +187,52 @@ module Regexp = struct
       { txt = new_txt; loc = new_loc }
     in
     recurse e
+
+  let check_alternation_captures ~loc pattern =
+    let rec get_alt_captures = function
+      | { Location.txt = Regexp_types.Alt branches; _ } -> Some (List.map get_branch_captures branches)
+      | { Location.txt = Seq es; _ } -> List.find_map get_alt_captures es
+      | { Location.txt = Capture_as (_, _, e); _ } -> get_alt_captures e
+      | _ -> None
+    and get_branch_captures branch =
+      let rec collect_captures acc = function
+        | { Location.txt = Regexp_types.Capture_as (name, _, e); _ } -> collect_captures (name.txt :: acc) e
+        | { Location.txt = Seq es; _ } -> List.fold_left collect_captures acc es
+        | { Location.txt = Opt e; _ }
+        | { Location.txt = Repeat (_, e); _ }
+        | { Location.txt = Nongreedy e; _ }
+        | { Location.txt = Caseless e; _ }
+        | { Location.txt = Capture e; _ } ->
+          collect_captures acc e
+        | { Location.txt = Alt _; _ } -> acc
+        | _ -> acc
+      in
+      collect_captures [] branch |> List.rev
+    in
+
+    match get_alt_captures pattern with
+    | None -> fun expr -> expr
+    | Some branches_captures ->
+      (* check if different branches have different capture variables *)
+      let all_vars = List.concat branches_captures |> List.sort_uniq String.compare in
+      let branch_var_sets = List.map (List.sort_uniq String.compare) branches_captures in
+
+      (* if not all branches have the same variables, issue warning *)
+      let has_inconsistent_captures =
+        List.exists (fun branch_vars -> List.length branch_vars <> List.length all_vars || branch_vars <> all_vars) branch_var_sets
+      in
+
+      if has_inconsistent_captures && List.length all_vars > 1 then begin
+        let warning_msg =
+          Printf.sprintf
+            {| This let destruct pattern has alternations with different capture groups (%s).
+               Only one branch will match at runtime, but all variables are being bound.
+               Consider using a single capture group over the alternations. |}
+            (String.concat ", " all_vars)
+        in
+        Util.warn ~loc warning_msg
+      end
+      else fun expr -> expr
 end
 
 module Parser = struct
@@ -197,7 +243,7 @@ module Parser = struct
     let r = Regexp.(relocate ~pos @@ squash_codes r) in
     let nG, bs = Regexp.bindings r in
     let re = Regexp.to_re_expr ~in_let:(target = `Let) r in
-    re, bs, nG, flags
+    r, re, bs, nG, flags
 end
 
 let make_default_rhs ~mode ~target ~loc = function
@@ -222,6 +268,7 @@ let make_default_rhs ~mode ~target ~loc = function
         | `Match, `Mik -> "any mikmatch cases"
         | `Let, `Pcre -> "the pcre regex"
         | `Let, `Mik -> "the mikmatch regex"
+        | _, `Mixed -> "any regex"
       in
 
       let location_desc =
@@ -280,7 +327,7 @@ let transform_destructuring_let ~mode ~loc pattern_str expr =
   let target = `Match in
   let pos = loc.loc_start in
   let parser = Parser.get_parser ~mode ~target ~pos in
-  let re, bs, _, flags = Parser.run ~parser ~target ~pos pattern_str in
+  let r, re, bs, _, flags = Parser.run ~parser ~target ~pos pattern_str in
   let capture_names = List.map (fun (name, _, _, _) -> name) (List.rev bs) in
 
   let lhs_pattern =
@@ -325,6 +372,7 @@ let transform_destructuring_let ~mode ~loc pattern_str expr =
     [%expr
       let _ppx_regexp_v = [%e expr] in
       [%e build_exec_match ~loc ~re_var ~continue_next:default_rhs ~on_match]]
+    |> Regexp.check_alternation_captures ~loc r
   in
 
   { pvb_pat = lhs_pattern; pvb_expr = rhs_expr; pvb_attributes = []; pvb_loc = loc }, [ re_binding ]
@@ -345,7 +393,7 @@ let transform_cases ~mode ~loc cases =
       let re_offset = (loc_end.pos_cnum - loc_start.pos_cnum - String.length re_src) / 2 in
       let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset } in
       let parser = Parser.get_parser ~mode ~target ~pos in
-      let re, bs, nG, flags = Parser.run ~parser ~target ~pos re_src in
+      let _, re, bs, nG, flags = Parser.run ~parser ~target ~pos re_src in
       let re_str = Pprintast.string_of_expression re in
       re, re_str, nG, bs, case.pc_rhs, case.pc_guard, flags)
   in
@@ -488,7 +536,7 @@ let transform_mixed_match ~loc ?matched_expr cases acc =
       let pos = str_loc.loc_start in
       let mode = if "pcre" = ext then `Pcre else `Mik in
       let parser = Parser.get_parser ~mode ~target ~pos in
-      let re, bs, nG, flags = Parser.run ~parser ~pos ~target pat in
+      let _, re, bs, nG, flags = Parser.run ~parser ~pos ~target pat in
       `Ext (re, nG, bs, case.pc_rhs, case.pc_guard, flags)
     | _ -> `Regular case
   in
@@ -513,9 +561,11 @@ let transform_mixed_match ~loc ?matched_expr cases acc =
 
     let bindings = List.map (fun (_, _, b) -> b) compilations in
 
+    let default_rhs = make_default_rhs ~mode:`Mixed ~target ~loc [] in
+
     let rec build_ordered_match input_var case_idx cases comps =
       match cases, comps with
-      | [], _ -> [%expr raise (Match_failure ("", 0, 0))]
+      | [], _ -> default_rhs
       | `Regular case :: rest, _ ->
         [%expr
           match [%e input_var] with
