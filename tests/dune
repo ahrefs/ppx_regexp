@@ -9,7 +9,7 @@
   (names test_ppx_regexp test_ppx_regexp_unused)
   (modules test_ppx_regexp test_ppx_regexp_unused)
   (package ppx_regexp_extended)
-  (libraries re re.perl)
+  (libraries ounit2 re re.perl)
   (preprocess (pps ppx_regexp_extended)))
 
 (executable
