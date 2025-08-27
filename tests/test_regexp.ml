@@ -16,6 +16,7 @@
  *)
 
 open Printf
+open Regexp_types
 module Loc = Location
 module Q = QCheck
 
@@ -70,8 +71,10 @@ module Regexp = struct
     | Opt e -> (match simplify e with { Loc.txt = Opt _; _ } as e' -> e'.Loc.txt | e' -> Opt e')
     | Repeat (ij, e) -> Repeat (ij, simplify e)
     | Nongreedy e -> Nongreedy (simplify e)
+    | Caseless e -> Caseless (simplify e)
     | Capture e -> Capture (simplify e)
-    | Capture_as (name, e) -> Capture_as (name, simplify e)
+    | Capture_as (name, conv, e) -> Capture_as (name, conv, simplify e)
+    | Pipe_all (name, conv, e) -> Pipe_all (name, conv, simplify e)
     | (Code _ | Call _) as e -> e
 
   let rec equal' e1 e2 =
@@ -81,8 +84,10 @@ module Regexp = struct
     | Opt e1, Opt e2 -> equal' e1 e2
     | Repeat ({ Loc.txt = ij1; _ }, e1), Repeat ({ Loc.txt = ij2; _ }, e2) -> ij1 = ij2 && equal' e1 e2
     | Nongreedy e1, Nongreedy e2 -> equal' e1 e2
+    | Caseless e1, Caseless e2 -> equal' e1 e2
     | Capture e1, Capture e2 -> equal' e1 e2
-    | Capture_as (name1, e1), Capture_as (name2, e2) -> name1.Loc.txt = name2.Loc.txt && equal' e1 e2
+    | Capture_as (name1, conv1, e1), Capture_as (name2, conv2, e2) -> name1.Loc.txt = name2.Loc.txt && conv1 = conv2 && equal' e1 e2
+    | Pipe_all (name1, conv1, e1), Pipe_all (name2, conv2, e2) -> name1.Loc.txt = name2.Loc.txt && conv1 = conv2 && equal' e1 e2
     | Call name1, Call name2 -> name1.Loc.txt = name2.Loc.txt
     | _, _ -> false (* We'll notice. *)
 
@@ -93,7 +98,9 @@ module Regexp = struct
     let delimit_if b s = if b then "(" ^ s ^ ")" else s in
     let rec aux p e =
       match e.Loc.txt with
-      | Code s -> delimit_if (p > p_seq) s
+      | Code s ->
+        let s = if String.contains s '/' then String.concat "\\/" (String.split_on_char '/' s) else s in
+        delimit_if (p > p_seq) s
       | Seq es -> delimit_if (p > p_seq) (String.concat "" (List.map (aux p_seq) es))
       | Alt es -> delimit_if (p > p_alt) (String.concat "|" (List.map (aux p_alt) es))
       | Opt e -> delimit_if (p >= p_suffix) (aux p_suffix e ^ "?")
@@ -101,14 +108,15 @@ module Regexp = struct
         let j_str = match j_opt with None -> "" | Some j -> string_of_int j in
         delimit_if (p >= p_suffix) (sprintf "%s{%d,%s}" (aux p_suffix e) i j_str)
       | Nongreedy e -> aux (p_suffix - 1) e ^ "?"
+      | Caseless e -> "(?i:" ^ aux (p_suffix - 1) e ^ ")"
       | Capture e -> "(+" ^ aux p_bottom e ^ ")"
-      | Capture_as ({ Loc.txt = name; _ }, e) -> "(?<" ^ name ^ ">" ^ aux p_bottom e ^ ")"
+      | Capture_as ({ Loc.txt = name; _ }, _, e) -> "(?<" ^ name ^ ">" ^ aux p_bottom e ^ ")"
+      | Pipe_all (_, _, e) -> aux p_bottom e
       | Call { Loc.txt = idr; _ } -> "(&" ^ String.concat "." (Longident.flatten idr) ^ ")"
     in
     aux 0
 
   let rec pp_debug ppf self =
-    let open Regexp in
     let open Format in
     let open Loc in
     let pp_pos ppf pos =
@@ -139,8 +147,10 @@ module Regexp = struct
       let pp_option f ppf = function None -> () | Some e -> f ppf e in
       fprintf ppf "(Repeat {%d,%a}%a %a)" i (pp_option Format.pp_print_int) j pp_loc loc pp_debug e
     | Nongreedy e -> fprintf ppf "(Nongreedy %a)" pp_debug e
+    | Caseless e -> fprintf ppf "(Caseless %a)" pp_debug e
     | Capture e -> fprintf ppf "(Capture %a)" pp_debug e
-    | Capture_as (name, e) -> fprintf ppf "(Capture_as %s%a %a)" name.txt pp_loc name.loc pp_debug e
+    | Capture_as (name, _, e) -> fprintf ppf "(Capture_as %s%a %a)" name.txt pp_loc name.loc pp_debug e
+    | Pipe_all (name, _, e) -> fprintf ppf "(Pipe_all %s%a %a)" name.txt pp_loc name.loc pp_debug e
     | Call name -> fprintf ppf "(Call %s%a)" (String.concat "." (Longident.flatten name.txt)) pp_loc name.loc);
     pp_loc ppf self.loc
 
@@ -160,15 +170,17 @@ module Regexp = struct
     | Opt e -> Re.opt (to_re e)
     | Repeat ({ Loc.txt = i, j; _ }, e) -> Re.repn (to_re e) i j
     | Nongreedy e -> Re.non_greedy (to_re e)
+    | Caseless e -> Re.no_case (to_re e)
     | Capture e -> Re.group (to_re e)
-    | Capture_as (_, e) -> Re.group (to_re e)
+    | Capture_as (_, _, e) -> Re.group (to_re e)
+    | Pipe_all (_, _, e) -> to_re e
     | Call _ -> raise Re.Perl.Not_supported
 
   let rec has_anon_capture e =
     match e.Loc.txt with
     | Code _ | Call _ -> false
     | Seq es | Alt es -> List.exists has_anon_capture es
-    | Opt e | Repeat (_, e) | Capture_as (_, e) | Nongreedy e -> has_anon_capture e
+    | Opt e | Repeat (_, e) | Capture_as (_, _, e) | Pipe_all (_, _, e) | Nongreedy e | Caseless e -> has_anon_capture e
     | Capture _ -> true
 end
 
@@ -193,14 +205,13 @@ let gen_name =
 
 let gen_regexp =
   let open Q.Gen in
-  let open Regexp in
   let gen_char = map (fun c -> mknoloc (Code (String.make 1 c))) numeral in
   let gen_backlash_op =
     let backslash_ops = "wWsSdDbBAZzG" in
     map (fun i -> mknoloc (Code (sprintf "\\%c" backslash_ops.[i]))) (int_bound (String.length backslash_ops - 1))
   in
   let gen_quoted_op =
-    let quotable = "!\"#$%&'()*+,-./:=<=>?@[\\]^`{|}~" in
+    let quotable = "!\"#$%&'()*+,-.:=<=>?@[\\]^`{|}~" in
     map (fun i -> mknoloc (Code (sprintf "\\%c" quotable.[i]))) (int_bound (String.length quotable - 1))
   in
   map Regexp.simplify
@@ -212,7 +223,8 @@ let gen_regexp =
   let gen_opt = map (fun e -> mknoloc (Opt e)) (self n) in
   let gen_repeat = map2 (fun i e -> mknoloc (Repeat (mknoloc (i, None), e))) nat (self n) in
   let gen_capture = map (fun e -> mknoloc (Capture e)) (self n) in
-  let gen_capture_as = map2 (fun a e -> mknoloc (Capture_as (mknoloc a, e))) gen_name (self n) in
+  let gen_capture_as = map2 (fun a e -> mknoloc (Capture_as (mknoloc a, None, e))) gen_name (self n) in
+  let gen_caseless = map (fun e -> mknoloc (Caseless e)) (self n) in
   frequency
     [
       1, gen_char;
@@ -224,12 +236,12 @@ let gen_regexp =
       n, gen_repeat;
       n, gen_capture;
       n, gen_capture_as;
+      n, gen_caseless;
     ]
 
 let shrink_regexp =
   let open Q.Shrink in
   let open Q.Iter in
-  let open Regexp in
   let rec shrink e =
     match e.Loc.txt with
     | Code s -> map (fun s -> mknoloc (Code s)) (string s)
@@ -238,8 +250,9 @@ let shrink_regexp =
     | Opt e -> map (fun e -> mknoloc (Opt e)) (shrink e)
     | Repeat ({ Loc.txt = i, j; _ }, e) ->
       map2 (fun (i, j) e -> mknoloc (Repeat (mknoloc (i, j), e))) (pair (int i) (option int j)) (shrink e)
+    | Caseless e -> map (fun e -> mknoloc (Caseless e)) (shrink e)
     | Capture e -> map (fun e -> mknoloc (Capture e)) (shrink e)
-    | Capture_as (name, e) -> map2 (fun name e -> mknoloc (Capture_as (mknoloc name, e))) (string name.Loc.txt) (shrink e)
+    | Capture_as (name, conv, e) -> map2 (fun name e -> mknoloc (Capture_as (mknoloc name, conv, e))) (string name.Loc.txt) (shrink e)
     | _ -> empty
   in
   fun e -> map Regexp.simplify (shrink e)
@@ -248,9 +261,10 @@ let arb_regexp = Q.make ~print:Regexp.show_debug ~shrink:shrink_regexp gen_regex
 
 let test_parse s =
   let r =
-    match Regexp.parse_exn s with
+    match Regexp.parse_exn ~target:`Match s with
     | exception Loc.Error err -> Error err
-    | e -> Ok (e, try Ok (Regexp.to_re e) with Re.Perl.Parse_error -> Error `Parse_error | Re.Perl.Not_supported -> Error `Not_supported)
+    | e, __ ->
+      Ok (e, try Ok (Regexp.to_re e) with Re.Perl.Parse_error -> Error `Parse_error | Re.Perl.Not_supported -> Error `Not_supported)
   in
   let r' = try Ok (Re.Perl.re s) with Re.Perl.Parse_error -> Error `Parse_error | Re.Perl.Not_supported -> Error `Not_supported in
   match r, r' with
@@ -265,13 +279,53 @@ let test_parse s =
     (* TODO: Would have been nice to compare the two Re.t here. *)
     true
 
+let test_flag_parsing =
+  let open Regexp in
+  let abc = mknoloc @@ Seq (List.map mknoloc [ Code "a"; Code "b"; Code "c" ]) in
+  let a_slash_b = mknoloc @@ Seq (List.map mknoloc [ Code "a"; Code "\\/"; Code "b" ]) in
+  let a_slash_b_2 = mknoloc @@ Seq (List.map mknoloc [ Code "a"; Code "/"; Code "b" ]) in
+  let test_cases =
+    [
+      (* Basic flag tests *)
+      "/abc/", (abc, pcre_default_flags);
+      "/abc/i", (abc, { case_insensitive = true; anchored = false });
+      "/abc/a", (abc, { case_insensitive = false; anchored = true });
+      "/abc/ia", (abc, { case_insensitive = true; anchored = true });
+      "/abc/ai", (abc, { case_insensitive = true; anchored = true });
+      (* Patterns with slashes inside *)
+      "/a\\/b/", (a_slash_b, pcre_default_flags);
+      "/a\\/b/i", (a_slash_b, { case_insensitive = true; anchored = false });
+      (* Patterns without flag syntax *)
+      "abc", (abc, pcre_default_flags);
+      "a/b", (a_slash_b_2, pcre_default_flags);
+      (* Whitespace in flags *)
+      "/abc/ i", (abc, { case_insensitive = true; anchored = false });
+      "/abc/i a", (abc, { case_insensitive = true; anchored = true });
+      "/abc/ \t\n\r i \t a \n", (abc, { case_insensitive = true; anchored = true });
+    ]
+  in
+
+  let run_test (input, (expected_ast, expected_flags)) =
+    match parse_exn ~target:`Match input with
+    | exception Loc.Error err -> Q.Test.fail_reportf "Failed to parse %S: %a" input pp_location_error err
+    | ast, flags ->
+      if not (equal ast expected_ast) then
+        Q.Test.fail_reportf "Pattern mismatch for %S: expected %a, got %a" input pp_debug expected_ast pp_debug ast
+      else if flags <> expected_flags then
+        Q.Test.fail_reportf "Flags mismatch for %S: expected {i=%b; a=%b}, got {i=%b; a=%b}" input expected_flags.case_insensitive
+          expected_flags.anchored flags.case_insensitive flags.anchored
+      else true
+  in
+  List.for_all run_test test_cases
+
 let tests =
   [
     Q.Test.make ~long_factor:100 ~name:"parse ∘ to_string" arb_regexp (fun e ->
-      match Regexp.parse_exn (Regexp.to_string e) with
+      match Regexp.parse_exn ~target:`Match (Regexp.to_string e) with
       | exception Loc.Error err -> Q.Test.fail_reportf "%a" pp_location_error err
-      | e' -> Regexp.equal e' e);
+      | e', _ -> Regexp.equal e' e);
     Q.Test.make ~long_factor:100 ~name:"to_string ∘ parse" (Q.string_gen Q.Gen.printable) test_parse;
+    Q.Test.make ~name:"flag parsing" Q.unit (fun () -> test_flag_parsing);
   ]
 
 let () = QCheck_runner.run_tests_main tests

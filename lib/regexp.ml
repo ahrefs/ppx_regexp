@@ -58,7 +58,7 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
               Location.raise_errorf ~loc:Location.none "Unknown flag '%c' at position %d" c error_pos)
         in
         pattern, parse_flags 0 pcre_default_flags
-      | _ -> Location.raise_errorf ~loc:Location.none "Unmatched opening '/'")
+      | _ -> s, pcre_default_flags)
     else s, pcre_default_flags
   in
 
