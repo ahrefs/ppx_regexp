@@ -34,25 +34,64 @@ let transformation =
 
     method! structure_item item acc =
       match item.pstr_desc with
+      | Pstr_type (rec_flag, type_decls) ->
+        let needs_transformation =
+          List.exists
+            (fun td ->
+              match td.ptype_manifest with
+              | Some { ptyp_desc = Ptyp_extension ({ txt = "pcre" | "mikmatch"; _ }, _); _ } -> true
+              | _ -> false)
+            type_decls
+        in
+
+        if not needs_transformation then super#structure_item item acc
+        else (
+          (* Process each type declaration *)
+          let all_items =
+            List.fold_left
+              (fun items_acc td ->
+                match td.ptype_manifest with
+                | Some
+                    {
+                      ptyp_desc =
+                        Ptyp_extension
+                          ( { txt = ("pcre" | "mikmatch") as ext; loc },
+                            PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pattern_str, _, _)); _ }, _); _ } ]
+                          );
+                      _;
+                    } ->
+                  let mode = if ext = "pcre" then `Pcre else `Mik in
+                  let type_name = td.ptype_name.txt in
+                  let bindings = Transformations.transform_type ~mode ~loc rec_flag type_name pattern_str td in
+                  items_acc @ bindings
+                | _ -> items_acc)
+              [] type_decls
+          in
+
+          let wrapped = pstr_include ~loc:item.pstr_loc (include_infos ~loc:item.pstr_loc (pmod_structure ~loc:item.pstr_loc all_items)) in
+
+          wrapped, acc)
       (* let%mik/%pcre x = {|some regex|}*)
       | Pstr_extension (({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
         let mode = if ext = "pcre" then `Pcre else `Mik in
         let processed_vbs, collected_bindings =
           List.fold_left
-            (fun (vbs_acc, bindings_acc) vb ->
-              match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
-              (* pattern definition - let%mikmatch/%pcre name = {|/regex/|} *)
-              | Ppat_var { txt = var_name; loc }, Pexp_constant (Pconst_string (_, _, _)) ->
-                let binding = Transformations.transform_let ~mode vb in
-                let alias = make_alias_binding ~loc ~var_name in
-                alias :: vbs_acc, binding :: bindings_acc
-              (* destructuring - let%mikmatch {|/pattern/|} = expr *)
-              | Ppat_constant (Pconst_string (pattern_str, _, _)), _ ->
-                let new_vb, new_bindings = Transformations.transform_destructuring_let ~mode ~loc:vb.pvb_loc pattern_str vb.pvb_expr in
-                new_vb :: vbs_acc, new_bindings @ bindings_acc
-              | _ ->
-                let binding = Transformations.transform_let ~mode vb in
-                binding :: vbs_acc, binding :: bindings_acc)
+            begin
+              fun (vbs_acc, bindings_acc) vb ->
+                match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+                (* pattern definition - let%mikmatch/%pcre name = {|/regex/|} *)
+                | Ppat_var { txt = var_name; loc }, Pexp_constant (Pconst_string (_, _, _)) ->
+                  let binding = Transformations.transform_let ~mode vb in
+                  let alias = make_alias_binding ~loc ~var_name in
+                  alias :: vbs_acc, binding :: bindings_acc
+                (* destructuring - let%mikmatch {|/pattern/|} = expr *)
+                | Ppat_constant (Pconst_string (pattern_str, _, _)), _ ->
+                  let new_vb, new_bindings = Transformations.transform_destructuring_let ~mode ~loc:vb.pvb_loc pattern_str vb.pvb_expr in
+                  new_vb :: vbs_acc, new_bindings @ bindings_acc
+                | _ ->
+                  let binding = Transformations.transform_let ~mode vb in
+                  binding :: vbs_acc, binding :: bindings_acc
+            end
             ([], acc) vbs
         in
 
@@ -98,6 +137,7 @@ let transformation =
         let loc = e.pexp_loc in
         begin
           match e.pexp_desc with
+          (* type%mikmatch  = {|some regex|} *)
           | Pexp_function cases ->
             let cases, binding = Transformations.transform_cases ~mode ~loc cases in
             [%expr fun _ppx_regexp_v -> [%e cases]], binding @ acc

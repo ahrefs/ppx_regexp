@@ -48,8 +48,8 @@ let pp_conv = function
   | None -> "NONE"
   | Some Regexp_types.Int -> "INT"
   | Some Regexp_types.Float -> "FLOAT"
-  | Some (Regexp_types.Func func_name) -> Format.sprintf "FUNC_NAME: %s." func_name
-  | Some (Regexp_types.Pipe_all_func func_name) -> Format.sprintf "PIPE_FUNC_NAME: %s" func_name
+  | Some (Regexp_types.Func (func_name, _)) -> Format.sprintf "FUNC_NAME: %s." (Longident.name func_name)
+  | Some (Regexp_types.Pipe_all_func func_name) -> Format.sprintf "PIPE_FUNC_NAME: %s" (Longident.name func_name)
 
 (* debugging *)
 let rec debug_re indent (ast : string Regexp_types.t) =

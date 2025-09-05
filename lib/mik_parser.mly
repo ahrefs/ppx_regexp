@@ -102,6 +102,7 @@ pattern:
   | alt_expr { $1 }
   | alt_expr PIPE func = ident AS name = IDENT {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      let func = string_to_longident func in
       wrap_loc $startpos $endpos (Pipe_all (name_loc, func, $1))
     }
   | alt_expr PIPE { missing_error "function name after '>>>'" $startpos($2) $endpos }
@@ -244,7 +245,18 @@ basic_atom:
       let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
       let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
-      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func func), call_node))
+      let func = string_to_longident func in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, None)), call_node))
+    }
+  | LPAREN id = IDENT AS name = IDENT COLON EQUAL func = ident COLON typ = ident RPAREN
+  | LPAREN id = MOD_IDENT AS name = IDENT COLON EQUAL func = ident COLON typ = ident RPAREN {
+      (* (text as t := process : typ) -> captures 'text' pattern as 't' processed by function, with result as type 'typ' *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      let func = string_to_longident func in
+      let typ = string_to_longident typ in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, Some typ)), call_node))
     }
   | LPAREN IDENT AS IDENT EOF?
   | LPAREN MOD_IDENT AS IDENT EOF? {
@@ -286,7 +298,14 @@ basic_atom:
     }
   | LPAREN pattern AS name = IDENT COLON EQUAL func = ident RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
-      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func func), $2))
+      let func = string_to_longident func in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, None)), $2))
+    }
+  | LPAREN pattern AS name = IDENT COLON EQUAL func = ident COLON typ = ident RPAREN {
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      let func = string_to_longident func in
+      let typ = string_to_longident typ in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, Some typ)), $2))
     }
   | LPAREN pattern AS IDENT EOF? {
       unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4)
