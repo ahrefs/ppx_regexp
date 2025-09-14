@@ -1,6 +1,6 @@
 (library
   (name ppx_regexp)
-  (public_name ppx_regexp_extended)
+  (public_name ppx_mikmatch)
   (kind ppx_rewriter)
   (modules util transformations ppx_regexp)
   (preprocess (pps ppxlib.metaquot))
