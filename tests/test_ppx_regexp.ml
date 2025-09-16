@@ -520,6 +520,70 @@ let test_mixed_matching _ =
   assert_raises (Failure "File tests/test_ppx_regexp.ml, lines 512-514, characters 24-33: String did not match any regex.") (fun () ->
     no_default_case "c")
 
+let%mikmatch date_format = {| digit{4} '-' digit{2} '-' digit{2} ' ' digit{2} ':' digit{2} ':' digit{2} |}
+
+type date = {%mikmatch| (date_format as date) |}
+
+type mode =
+  [ `A
+  | `B
+  | `Other
+  ]
+
+let mk_mode = function "a" -> `A | "b" -> `B | _ -> `Other
+let pp_mode fmt mode = Format.fprintf fmt @@ match mode with `A -> "a" | `B -> "b" | `Other -> "other"
+
+type log =
+  {%mikmatch| (date_format as date)
+  " [" (upper+ as level) "]"
+  ((" pid=" (digit+ as pid : int))? | (" name=" ([a-z]+ as pidn))?)
+  ' '{2-3}
+  ('a'|'b'|"other" as mode := mk_mode : mode)
+  ": "
+  (any+ as message)
+|}
+
+let test_parse_with_pid _ =
+  let input = "2025-06-13 12:42:12 [INFO] pid=123  a: something happened" in
+  match parse_log input with
+  | None -> assert_failure "Should parse log with pid"
+  | Some log ->
+    assert_equal "2025-06-13 12:42:12" log.date;
+    assert_equal "INFO" log.level;
+    assert_equal (Some 123) log.pid;
+    assert_equal None log.pidn;
+    assert_equal `A log.mode;
+    assert_equal "something happened" log.message;
+    assert_equal (Format.asprintf "%a" pp_log log) input;
+    let log = { log with pid = None; pidn = Some "test"; mode = `B } in
+    assert_equal (Format.asprintf "%a" pp_log log) "2025-06-13 12:42:12 [INFO] name=test  b: something happened"
+
+let test_parse_with_name _ =
+  let input = "2025-06-13 12:42:12 [WARN] name=server  b: connection lost" in
+  match parse_log input with
+  | None -> assert_failure "Should parse log with name"
+  | Some log ->
+    assert_equal "2025-06-13 12:42:12" log.date;
+    assert_equal "WARN" log.level;
+    assert_equal None log.pid;
+    assert_equal (Some "server") log.pidn;
+    assert_equal `B log.mode;
+    assert_equal "connection lost" log.message;
+    assert_equal (Format.asprintf "%a" pp_log log) input
+
+let test_parse_with_neither _ =
+  let input = "2025-06-13 12:42:12 [ERROR]  other: system failure" in
+  match parse_log input with
+  | None -> assert_failure "Should parse log without pid/name"
+  | Some log ->
+    assert_equal "2025-06-13 12:42:12" log.date;
+    assert_equal "ERROR" log.level;
+    assert_equal None log.pid;
+    assert_equal None log.pidn;
+    assert_equal `Other log.mode;
+    assert_equal "system failure" log.message;
+    assert_equal (Format.asprintf "%a" pp_log log) input
+
 let suite =
   "mikmatch_tests"
   >::: [
@@ -541,6 +605,9 @@ let suite =
          "test_complex_patterns" >:: test_complex_patterns;
          "test_let_destructuring" >:: test_let_destructuring;
          "test_mixed_matching" >:: test_mixed_matching;
+         "test_parse_with_pid" >:: test_parse_with_pid;
+         "test_parse_with_name" >:: test_parse_with_name;
+         "test_parse_with_neither" >:: test_parse_with_neither;
        ]
 
 let () = run_test_tt_main suite

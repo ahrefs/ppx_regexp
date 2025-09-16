@@ -46,11 +46,11 @@ let transformation =
 
         if not needs_transformation then super#structure_item item acc
         else (
-          (* Process each type declaration *)
           let all_items =
             List.fold_left
               (fun items_acc td ->
                 match td.ptype_manifest with
+                (* type ... = {%mikmatch| ... |} *)
                 | Some
                     {
                       ptyp_desc =
@@ -137,7 +137,6 @@ let transformation =
         let loc = e.pexp_loc in
         begin
           match e.pexp_desc with
-          (* type%mikmatch  = {|some regex|} *)
           | Pexp_function cases ->
             let cases, binding = Transformations.transform_cases ~mode ~loc cases in
             [%expr fun _ppx_regexp_v -> [%e cases]], binding @ acc
