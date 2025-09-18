@@ -584,6 +584,84 @@ let test_parse_with_neither _ =
     assert_equal "system failure" log.message;
     assert_equal (Format.asprintf "%a" pp_log log) input
 
+type url =
+  {%mikmatch| 
+  (("http" | "https") as scheme) "://"
+  ((alnum+ ('.' alnum+)*) as host)
+  (':' (digit+ as port : int))?
+  ('/' ([^'?' '#']* as path))?
+  ('?' ([^'#']* as query))?
+  ('#' (any* as fragment))?
+|}
+
+let test_parse_url _ =
+  let url1 = "https://example.com" in
+  match parse_url url1 with
+  | None -> assert_failure "Should parse minimal URL"
+  | Some u ->
+    assert_equal "https" u.scheme;
+    assert_equal "example.com" u.host;
+    assert_equal None u.port;
+    assert_equal None u.path;
+    assert_equal (Format.asprintf "%a" pp_url u) url1;
+    let u2 = { u with port = Some 8080; path = Some "api/v1" } in
+    assert_equal (Format.asprintf "%a" pp_url u2) "https://example.com:8080/api/v1";
+
+    let url2 = "http://api.service.io:3000/users/123?active=true#section" in
+    (match parse_url url2 with
+    | None -> assert_failure "Should parse full URL"
+    | Some u ->
+      assert_equal (Some 3000) u.port;
+      assert_equal (Some "users/123") u.path;
+      assert_equal (Some "active=true") u.query;
+      assert_equal (Some "section") u.fragment;
+      assert_equal (Format.asprintf "%a" pp_url u) url2)
+
+type http_method =
+  | GET
+  | POST
+  | PUT
+  | DELETE
+  | PATCH
+
+let method_of_string = function "GET" -> GET | "POST" -> POST | "PUT" -> PUT | "DELETE" -> DELETE | "PATCH" -> PATCH | _ -> GET
+
+let pp_http_method fmt = function
+  | GET -> Format.fprintf fmt "GET"
+  | POST -> Format.fprintf fmt "POST"
+  | PUT -> Format.fprintf fmt "PUT"
+  | DELETE -> Format.fprintf fmt "DELETE"
+  | PATCH -> Format.fprintf fmt "PATCH"
+
+type http_request =
+  [%mikmatch
+    {|
+      (("GET"|"POST"|"PUT"|"DELETE"|"PATCH") as meth := method_of_string : http_method)
+      ' '+
+      ('/' [^ ' ' '?']* as path)
+      ('?' ([^ ' ']* as query))?
+      ' '+
+      "HTTP/" (digit '.' digit as version)
+      '\n'
+      (((alnum | '-')+ ':' ' '* [^'\n']* '\n')* as headers)
+      ('\n' (any* as body))?
+    |}]
+
+let test_parse_http_request _ =
+  let req1 = "GET /api/users?page=1&limit=10 HTTP/1.1\nHost: example.com\nAccept: application/json\n\n" in
+  match parse_http_request req1 with
+  | None -> assert_failure "Should parse GET request"
+  | Some r ->
+    assert_equal GET r.meth;
+    assert_equal "/api/users" r.path;
+    assert_equal (Some "page=1&limit=10") r.query;
+    assert_equal "1.1" r.version;
+
+    let r2 = { r with meth = POST; query = None; body = Some "{\"name\":\"test\"}" } in
+    let output = Format.asprintf "%a" pp_http_request r2 in
+    assert_bool "Should have POST" (String.starts_with ~prefix:"POST" output);
+    assert_bool "Should not have query" (not (String.contains output '?'))
+
 let suite =
   "mikmatch_tests"
   >::: [
@@ -608,6 +686,8 @@ let suite =
          "test_parse_with_pid" >:: test_parse_with_pid;
          "test_parse_with_name" >:: test_parse_with_name;
          "test_parse_with_neither" >:: test_parse_with_neither;
+         "test_parse_url" >:: test_parse_url;
+         "test_parse_http_request" >:: test_parse_http_request;
        ]
 
 let () = run_test_tt_main suite
