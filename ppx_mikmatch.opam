@@ -45,6 +45,7 @@ matched substring available in the right-hand side of match cases
 - `let%pcre name = {|re|}` defines reusable patterns for use within `(?U/N<name>)` patterns
 - `match%mikmatch` supports mikmatch-style syntax with typed captures and pattern
 composition, along with `let%mikmatch` for defining reusable patterns
+- `type name = {%mikmatch| re |}` generates record types with parse/pp functions from patterns
 - let destructuring via `let%pcre/mikmatch {| regex |} = s`, where `regex` binds values and `s` is the input string
 - `/regex/flags` for providing compiler flags. `i` for caseless, `a` (%pcre) anchored, `u` (%mikmatch) unanchored
 - Caseless groups via `(?i:regex)` for %pcre, and the `~` operator for %mikmatch

@@ -121,6 +121,72 @@ The patterns are plain strings of the form accepted by `Re.Pcre`, with the follo
 A variable is allowed for the universal case and is bound to the matched
 string.
 
+### Type definitions from patterns
+You can generate record types from regex patterns:
+
+```ocaml
+type url = {%mikmatch|
+  (("http" | "https") as scheme) "://"
+  ((alnum+ ('.' alnum+)*) as host)
+  (':' (digit+ as port : int))?
+  ('/' ([^'?' '#']* as path))?
+  ('?' ([^'#']* as query))?
+  ('#' (any* as fragment))?
+|}
+```
+This generates:
+- A record type with fields for each named capture
+- `parse_url : string -> url option` - parses strings into the type
+- `pp_url : Format.formatter -> url -> unit` - pretty-prints back to string format
+
+> [!WARNING]
+> When printing, repetitions will be executed the minimum required amount of times.  
+> `*` prints nothing
+
+#### Smart reconstruction
+The pretty-printer intelligently handles alternations and optional fields:
+```ocaml
+let%mikmatch date_format = {| digit{4} '-' digit{2} '-' digit{2} ' ' digit{2} ':' digit{2} ':' digit{2} |}
+
+type date = {%mikmatch| (date_format as date) |}
+
+type mode =
+  [ `A
+  | `B
+  | `Other
+  ]
+
+let mk_mode = function "a" -> `A | "b" -> `B | _ -> `Other
+let pp_mode fmt mode = Format.fprintf fmt @@ match mode with `A -> "a" | `B -> "b" | `Other -> "other"
+
+type log = {%mikmatch| 
+  (date_format as date)
+  " [" (upper+ as level) "]"
+  ((" pid=" (digit+ as pid : int))? | (" name=" ([a-z]+ as name))?)
+  ' '{2-3}
+  ('a'|'b'|"other" as mode := mk_mode : mode)
+  ": "
+  (any+ as message)
+|}
+
+let input = "2025-06-13 12:42:12 [INFO] pid=123  a: something happened" in
+match parse_log input with
+| Some log ->
+  (* Prints: "2025-06-13 12:42:12 [INFO] pid=123  a: something happened" *)
+  Format.printf "%a@." pp_log log;
+  
+  (* Change from pid to name variant *)
+  let log' = { log with pid = None; name = Some "server" } in
+  (* Prints: "2025-06-13 12:42:12 [INFO] name=server  a: something happened" *)
+  Format.printf "%a@." pp_log log'
+```
+The pretty-printer detects which alternation branch to use based on field population - if `pid` is `Some _`, it prints the `pid` branch; if `name` is `Some _`, it prints the `name` branch.
+
+##### Type conversions and custom parsers
+- For function application you are required to pass the return type.
+- If the return type is itself an application (e.g. `string list`), then you must provide a type alias.  
+- The type must have an associated `pp` function. (Notice, in the example, the `mode` type and its associated functions)
+
 ### Example
 
 The following prints out times and hosts for SMTP connections to the Postfix daemon:

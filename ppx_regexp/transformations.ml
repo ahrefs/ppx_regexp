@@ -793,13 +793,6 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
 
   let pp_body = build_pp_expr ~top_lvl:true r in
 
-  let reconstruct_func_name = "reconstruct_" ^ type_name in
-  let reconstruct_func =
-    value_binding ~loc
-      ~pat:(ppat_var ~loc { txt = reconstruct_func_name; loc })
-      ~expr:[%expr fun v -> Format.asprintf "%a" [%e pexp_ident ~loc { txt = Longident.parse pp_func_name; loc }] v]
-  in
-
   [
     pstr_type ~loc rec_flag [ type_decl ];
     pstr_value ~loc Nonrecursive [ parse_binding ];
@@ -816,5 +809,4 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
       ];
     pstr_value ~loc Nonrecursive
       [ value_binding ~loc ~pat:(ppat_var ~loc { txt = pp_func_name; loc }) ~expr:[%expr fun ppf v -> [%e pp_body]] ];
-    pstr_value ~loc Nonrecursive [ reconstruct_func ];
   ]
