@@ -520,10 +520,6 @@ let test_mixed_matching _ =
   assert_raises (Failure "File tests/test_ppx_regexp.ml, lines 512-514, characters 24-33: String did not match any regex.") (fun () ->
     no_default_case "c")
 
-let%mikmatch date_format = {| digit{4} '-' digit{2} '-' digit{2} ' ' digit{2} ':' digit{2} ':' digit{2} |}
-
-type date = {%mikmatch| (date_format as date) |}
-
 type mode =
   [ `A
   | `B
@@ -532,6 +528,7 @@ type mode =
 
 let mk_mode = function "a" -> `A | "b" -> `B | _ -> `Other
 let pp_mode fmt mode = Format.fprintf fmt @@ match mode with `A -> "a" | `B -> "b" | `Other -> "other"
+let%mikmatch date_format = {| digit{4} '-' digit{2} '-' digit{2} ' ' digit{2} ':' digit{2} ':' digit{2} |}
 
 type log =
   {%mikmatch| (date_format as date)

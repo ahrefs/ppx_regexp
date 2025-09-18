@@ -146,10 +146,6 @@ This generates:
 #### Smart reconstruction
 The pretty-printer intelligently handles alternations and optional fields:
 ```ocaml
-let%mikmatch date_format = {| digit{4} '-' digit{2} '-' digit{2} ' ' digit{2} ':' digit{2} ':' digit{2} |}
-
-type date = {%mikmatch| (date_format as date) |}
-
 type mode =
   [ `A
   | `B
@@ -158,6 +154,8 @@ type mode =
 
 let mk_mode = function "a" -> `A | "b" -> `B | _ -> `Other
 let pp_mode fmt mode = Format.fprintf fmt @@ match mode with `A -> "a" | `B -> "b" | `Other -> "other"
+
+let%mikmatch date_format = {| digit{4} '-' digit{2} '-' digit{2} ' ' digit{2} ':' digit{2} ':' digit{2} |}
 
 type log = {%mikmatch| 
   (date_format as date)
