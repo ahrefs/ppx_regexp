@@ -55,8 +55,9 @@ let transformation =
                     {
                       ptyp_desc =
                         Ptyp_extension
-                          ( { txt = ("pcre" | "mikmatch") as ext; loc },
-                            PStr [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pattern_str, _, _)); _ }, _); _ } ]
+                          ( { txt = ("pcre" | "mikmatch") as ext; _ },
+                            PStr
+                              [ { pstr_desc = Pstr_eval ({ pexp_desc = Pexp_constant (Pconst_string (pattern_str, loc, _)); _ }, _); _ } ]
                           );
                       _;
                     } ->
@@ -80,17 +81,15 @@ let transformation =
               fun (vbs_acc, bindings_acc) vb ->
                 match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
                 (* pattern definition - let%mikmatch/%pcre name = {|/regex/|} *)
-                | Ppat_var { txt = var_name; loc }, Pexp_constant (Pconst_string (_, _, _)) ->
-                  let binding = Transformations.transform_let ~mode vb in
+                | Ppat_var { txt = var_name; _ }, Pexp_constant (Pconst_string (_, loc, _)) ->
+                  let binding = Transformations.transform_let ~loc ~mode vb in
                   let alias = make_alias_binding ~loc ~var_name in
                   alias :: vbs_acc, binding :: bindings_acc
                 (* destructuring - let%mikmatch {|/pattern/|} = expr *)
                 | Ppat_constant (Pconst_string (pattern_str, _, _)), _ ->
                   let new_vb, new_bindings = Transformations.transform_destructuring_let ~mode ~loc:vb.pvb_loc pattern_str vb.pvb_expr in
                   new_vb :: vbs_acc, new_bindings @ bindings_acc
-                | _ ->
-                  let binding = Transformations.transform_let ~mode vb in
-                  binding :: vbs_acc, binding :: bindings_acc
+                | _ -> vbs_acc, bindings_acc
             end
             ([], acc) vbs
         in
@@ -103,11 +102,11 @@ let transformation =
           List.fold_left
             (fun (vbs_acc, bindings_acc) vb ->
               match vb.pvb_expr.pexp_desc with
-              | Pexp_extension ({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_eval (expr, _); _ } ])
+              | Pexp_extension ({ txt = ("pcre" | "mikmatch") as ext; loc }, PStr [ { pstr_desc = Pstr_eval (expr, _); _ } ])
                 when match expr.pexp_desc with Pexp_constant (Pconst_string _) -> true | _ -> false ->
                 let mode = if ext = "pcre" then `Pcre else `Mik in
                 let new_vb = { vb with pvb_expr = expr } in
-                let binding = Transformations.transform_let ~mode new_vb in
+                let binding = Transformations.transform_let ~loc ~mode new_vb in
                 let alias =
                   match vb.pvb_pat.ppat_desc with Ppat_var { txt = var_name; loc } -> make_alias_binding ~loc ~var_name | _ -> new_vb
                 in

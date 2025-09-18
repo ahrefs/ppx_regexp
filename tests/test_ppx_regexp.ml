@@ -582,7 +582,7 @@ let test_parse_with_neither _ =
     assert_equal (Format.asprintf "%a" pp_log log) input
 
 type url =
-  {%mikmatch| 
+  {%mikmatch|
   (("http" | "https") as scheme) "://"
   ((alnum+ ('.' alnum+)*) as host)
   (':' (digit+ as port : int))?

@@ -202,6 +202,9 @@ basic_atom:
   | LBRACKET char_set { unclosed_error "character set (missing ']')" $startpos($1) $endpos }
   | LBRACKET error { syntax_error "Invalid character set" $startpos $endpos }
 
+  (* VARIABLE SUBSTITUTION *)
+
+  (* Simple identifier captures, no name capture *)
   | LPAREN id = IDENT RPAREN
   | LPAREN id = MOD_IDENT RPAREN {
       (* (word) -> captures the result of calling 'word' pattern *)
@@ -210,6 +213,8 @@ basic_atom:
       let name_loc = wrap_loc $startpos(id) $endpos(id) (last_component id) in
       wrap_loc $startpos $endpos (Capture_as (name_loc, None, call_node))
     }
+
+  (* Simple named captures *)
   | LPAREN IDENT AS RPAREN | LPAREN MOD_IDENT AS RPAREN { missing_error "name after 'as'" $startpos($3) $endpos($4) }
   | LPAREN id = IDENT AS name = IDENT RPAREN
   | LPAREN id = MOD_IDENT AS name = IDENT RPAREN {
@@ -219,10 +224,15 @@ basic_atom:
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, None, call_node))
     }
+
+  (* Named captures with type conversion + function app *)
   | LPAREN IDENT AS IDENT COLON RPAREN
-  | LPAREN IDENT AS MOD_IDENT COLON RPAREN {
+  | LPAREN IDENT AS MOD_IDENT COLON RPAREN
+  | LPAREN MOD_IDENT AS IDENT COLON RPAREN
+  | LPAREN MOD_IDENT AS MOD_IDENT COLON RPAREN {
       missing_error "type converter after ':'" $startpos($5) $endpos($6) 
     }
+
   | LPAREN id = IDENT AS name = IDENT COLON INT_CONVERTER RPAREN
   | LPAREN id = MOD_IDENT AS name = IDENT COLON INT_CONVERTER RPAREN {
       (* (digits as n : int) -> captures 'digits' pattern as 'n' converted to int *)
@@ -258,6 +268,8 @@ basic_atom:
       let typ = string_to_longident typ in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, Some typ)), call_node))
     }
+
+  (* Unclosed parentheses error cases for identifiers *)
   | LPAREN IDENT AS IDENT EOF?
   | LPAREN MOD_IDENT AS IDENT EOF? {
       unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4)
@@ -271,23 +283,46 @@ basic_atom:
       unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
     }
 
+  (* GENERAL PATTERNS *)
+
+  (* Simple, no capture *)
   | LPAREN pattern RPAREN {
       $2
     }
   | LPAREN RPAREN { missing_error "pattern inside parentheses" $startpos $endpos }
   | LPAREN pattern EOF? { unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($2) }
 
+  (* Simple named capture *)
   | LPAREN pattern AS RPAREN { missing_error "capture name after 'as'" $startpos($3) $endpos($4) }
+  | LPAREN pattern AS COLON {
+      missing_error "capture name between 'as' and ':'" $startpos($3) $endpos($4)
+    }
+  | LPAREN pattern AS COLON INT_CONVERTER RPAREN {
+      missing_error "capture name between 'as' and ':'" $startpos($3) $endpos($4)
+    }
+  | LPAREN pattern AS COLON FLOAT_CONVERTER RPAREN {
+      missing_error "capture name between 'as' and ':'" $startpos($3) $endpos($4)
+    }
+  | LPAREN pattern AS COLON EQUAL ident RPAREN {
+      missing_error "capture name between 'as' and ':='" $startpos($3) $endpos($5)
+    }
+  | LPAREN pattern AS COLON EQUAL ident COLON ident RPAREN {
+      missing_error "capture name between 'as' and ':='" $startpos($3) $endpos($5)
+    }
+
   | LPAREN pattern AS name = IDENT RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, None, $2))
     }
+
+  (* Named capture with type conversion + function app *)
   | LPAREN pattern AS IDENT COLON RPAREN {
       missing_error "type converter after ':'" $startpos($5) $endpos($6)
     }
   | LPAREN pattern AS IDENT COLON EQUAL RPAREN {
       missing_error "function name after ':='" $startpos($5) $endpos($6)
     }
+
   | LPAREN pattern AS name = IDENT COLON INT_CONVERTER RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some Int, $2))
@@ -307,6 +342,7 @@ basic_atom:
       let typ = string_to_longident typ in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, Some typ)), $2))
     }
+
   | LPAREN pattern AS IDENT EOF? {
       unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($4)
     }
@@ -317,6 +353,7 @@ basic_atom:
       unclosed_error "parentheses (missing ')')" $startpos($1) $endpos($6)
     }
 
+  (* Generic error case *)
   | LPAREN error { syntax_error "Invalid expression in parentheses" $startpos($2) $endpos }
 
 ident:

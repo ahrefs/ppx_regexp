@@ -107,9 +107,8 @@ module Regexp = struct
       | Pipe_all (_, _, e) -> recurse e
       | Call lid ->
         (* Use the Call node's own location, not the parent's location *)
-        let call_loc = lid.loc in
-        let ld = { txt = lid.txt; loc = call_loc } in
-        if in_let then pexp_ident ~loc:call_loc ld else [%expr Re.group [%e pexp_ident ~loc:call_loc ld]]
+        let ld = { txt = lid.txt; loc = lid.loc } in
+        if in_let then pexp_ident ~loc:lid.loc ld else [%expr Re.group [%e pexp_ident ~loc:lid.loc ld]]
     in
     function { Location.txt = Capture_as (_, _, e); _ } -> recurse e | e -> recurse e
 
@@ -142,51 +141,6 @@ module Regexp = struct
     | Capture_as (name, j, e') -> { e with txt = Capture_as (name, j, squash_codes e') }
     | Pipe_all (r, f, e') -> { e with txt = Pipe_all (r, f, squash_codes e') }
     | Call _ -> e
-
-  let relocate ~pos e =
-    let open Location in
-    let adjust_loc loc =
-      if loc = Location.none then loc
-      else
-        {
-          loc with
-          loc_start =
-            {
-              pos_fname = pos.pos_fname;
-              pos_lnum = pos.pos_lnum + loc.loc_start.pos_lnum - 1;
-              (* -1 because parser starts at line 1 *)
-              pos_cnum = pos.pos_cnum + loc.loc_start.pos_cnum;
-              pos_bol = pos.pos_bol;
-            };
-          loc_end =
-            {
-              pos_fname = pos.pos_fname;
-              pos_lnum = pos.pos_lnum + loc.loc_end.pos_lnum - 1;
-              pos_cnum = pos.pos_cnum + loc.loc_end.pos_cnum;
-              pos_bol = pos.pos_bol;
-            };
-        }
-    in
-
-    let rec recurse (node : _ Location.loc) =
-      let new_loc = adjust_loc node.loc in
-      let new_txt =
-        match node.txt with
-        | Code s -> Code s
-        | Seq es -> Seq (List.map recurse es)
-        | Alt es -> Alt (List.map recurse es)
-        | Opt e -> Opt (recurse e)
-        | Repeat (range, e) -> Repeat ({ range with loc = adjust_loc range.loc }, recurse e)
-        | Nongreedy e -> Nongreedy (recurse e)
-        | Caseless e -> Caseless (recurse e)
-        | Capture e -> Capture (recurse e)
-        | Capture_as (name, conv, e) -> Capture_as ({ name with loc = adjust_loc name.loc }, conv, recurse e)
-        | Pipe_all (name, func, e) -> Pipe_all ({ name with loc = adjust_loc name.loc }, func, recurse e)
-        | Call lid -> Call { lid with loc = adjust_loc lid.loc }
-      in
-      { txt = new_txt; loc = new_loc }
-    in
-    recurse e
 
   let check_alternation_captures ~loc pattern =
     let rec get_alt_captures = function
@@ -236,11 +190,23 @@ module Regexp = struct
 end
 
 module Parser = struct
+  let calculate_pattern_pos ~loc ~pattern_str =
+    let open Lexing in
+    match loc with
+    | { Location.loc_start; loc_end; _ } ->
+      let total_len = loc_end.pos_cnum - loc_start.pos_cnum in
+      let pattern_len = String.length pattern_str in
+
+      let delimiter_overhead = total_len - pattern_len in
+      let start_delimiter_size = delimiter_overhead / 2 in
+
+      { loc_start with pos_cnum = loc_start.pos_cnum + start_delimiter_size }
+
   let get_parser ~mode ~target ~pos = match mode with `Pcre -> Regexp.parse_exn ~target ~pos | `Mik -> Regexp.parse_mik_exn ~target ~pos
 
-  let run ~parser ~target ~pos s =
+  let run ~parser ~target ~pos:_ s =
     let r, flags = parser s in
-    let r = Regexp.(relocate ~pos @@ squash_codes r) in
+    let r = Regexp.squash_codes r in
     let nG, bs = Regexp.bindings r in
     let re = Regexp.to_re_expr ~in_let:(target = `Let) r in
     r, re, bs, nG, flags
@@ -311,11 +277,11 @@ let build_exec_match ~loc ~re_var ~continue_next ~on_match =
 
 (* Transformations *)
 
-let transform_let ~mode vb =
+let transform_let ~loc ~mode vb =
   let parser = Parser.get_parser ~mode ~target:`Let in
   match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
   | Ppat_var { txt = _; _ }, Pexp_constant (Pconst_string (value, _, _)) ->
-    let pos = vb.pvb_loc.loc_start in
+    let pos = loc.Location.loc_start in
     let parsed, _flags = parser ~pos value in
     let parsed = Regexp.squash_codes parsed in
     let re_expr = Regexp.to_re_expr ~in_let:true parsed in
@@ -325,7 +291,7 @@ let transform_let ~mode vb =
 
 let transform_destructuring_let ~mode ~loc pattern_str expr =
   let target = `Match in
-  let pos = loc.loc_start in
+  let pos = Parser.calculate_pattern_pos ~loc ~pattern_str in
   let parser = Parser.get_parser ~mode ~target ~pos in
   let r, re, bs, _, flags = Parser.run ~parser ~target ~pos pattern_str in
   let capture_names = List.map (fun (name, _, _, _) -> name) (List.rev bs) in
@@ -389,9 +355,8 @@ let transform_cases ~mode ~loc cases =
   in
 
   let parse_pattern ~mode case =
-    Ast_pattern.(parse (pstring __')) case.pc_lhs.ppat_loc case.pc_lhs (fun { txt = re_src; loc = { loc_start; loc_end; _ } } ->
-      let re_offset = (loc_end.pos_cnum - loc_start.pos_cnum - String.length re_src) / 2 in
-      let pos = { loc_start with pos_cnum = loc_start.pos_cnum + re_offset } in
+    Ast_pattern.(parse (pstring __')) case.pc_lhs.ppat_loc case.pc_lhs (fun { txt = re_src; loc } ->
+      let pos = Parser.calculate_pattern_pos ~loc ~pattern_str:re_src in
       let parser = Parser.get_parser ~mode ~target ~pos in
       let _, re, bs, nG, flags = Parser.run ~parser ~target ~pos re_src in
       let re_str = Pprintast.string_of_expression re in
@@ -600,7 +565,7 @@ let transform_mixed_match ~loc ?matched_expr cases acc =
   end
 
 let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
-  let pos = loc.Location.loc_start in
+  let pos = Parser.calculate_pattern_pos ~loc ~pattern_str in
   let parser = Parser.get_parser ~mode ~target:`Let ~pos in
   let r, re, bs, _nG, flags = Parser.run ~parser ~target:`Let ~pos pattern_str in
 

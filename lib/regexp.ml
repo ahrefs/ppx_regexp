@@ -266,45 +266,20 @@ let parse_exn ~target:_ ?(pos = Lexing.dummy_pos) s =
 
 let parse_mik_exn ~target ?(pos = Lexing.dummy_pos) s =
   let lexbuf = Lexing.from_string s in
+  lexbuf.lex_curr_p <- pos;
+  lexbuf.lex_start_p <- pos;
+  lexbuf.lex_abs_pos <- pos.pos_cnum;
   let mk_loc ?loc pos lexbuf =
     let open Lexing in
     let open Location in
     match loc with
-    | Some loc ->
-      {
-        loc_ghost = false;
-        loc_start =
-          {
-            pos_fname = pos.pos_fname;
-            pos_lnum = pos.pos_lnum + (loc.loc_start.pos_lnum - 1);
-            pos_bol = pos.pos_bol;
-            pos_cnum = pos.pos_cnum + loc.loc_start.pos_cnum;
-          };
-        loc_end =
-          {
-            pos_fname = pos.pos_fname;
-            pos_lnum = pos.pos_lnum + (loc.loc_end.pos_lnum - 1);
-            pos_bol = pos.pos_bol;
-            pos_cnum = pos.pos_cnum + loc.loc_end.pos_cnum;
-          };
-      }
+    | Some loc -> loc
     | None ->
+      (* no location from parser, use lexbuf positions *)
       {
         loc_ghost = false;
-        loc_start =
-          {
-            pos_fname = pos.pos_fname;
-            pos_lnum = pos.pos_lnum;
-            pos_bol = pos.pos_bol;
-            pos_cnum = pos.pos_cnum + lexbuf.lex_start_p.pos_cnum;
-          };
-        loc_end =
-          {
-            pos_fname = pos.pos_fname;
-            pos_lnum = pos.pos_lnum;
-            pos_bol = pos.pos_bol;
-            pos_cnum = pos.pos_cnum + lexbuf.lex_curr_p.pos_cnum;
-          };
+        loc_start = { pos with pos_cnum = pos.pos_cnum + lexbuf.lex_start_p.pos_cnum };
+        loc_end = { pos with pos_cnum = pos.pos_cnum + lexbuf.lex_curr_p.pos_cnum };
       }
   in
   let main = match target with `Match -> Mik_parser.main_match_case | `Let -> Mik_parser.main_let_expr in
