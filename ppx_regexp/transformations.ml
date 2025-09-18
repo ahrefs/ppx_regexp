@@ -679,22 +679,17 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
 
   let pp_func_name = "pp_" ^ type_name in
 
-  let rec build_pp_expr ~top_lvl (node : _ Location.loc) =
+  let rec build_pp_expr (node : _ Location.loc) =
     match node.txt with
     | Regexp_types.Code s -> [%expr Format.pp_print_string ppf [%e estring ~loc @@ unescape_literal s]]
     | Seq es ->
-      let exprs = List.map (build_pp_expr ~top_lvl:false) es in
+      let exprs = List.map build_pp_expr es in
       List.fold_left
         (fun acc e ->
           [%expr
             [%e acc];
             [%e e]])
         [%expr ()] exprs
-    | Alt _ when top_lvl ->
-      Util.error ~loc
-        "Top-level alternations in type definitions are problematic. Consider wrapping the entire alternation in a capture group, though \
-         note that the pretty-printer will only be able to reconstruct one branch."
-        re
     | Alt branches ->
       (* branch selection based on populated fields *)
       build_alt_pp_expr branches
@@ -724,8 +719,8 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
         match find_capture e with
         | Some name ->
           let field_access = pexp_field ~loc [%expr v] { txt = Lident name; loc } in
-          [%expr match [%e field_access] with None -> () | Some _ -> [%e build_pp_expr ~top_lvl:false e]]
-        | None -> build_pp_expr ~top_lvl:false e
+          [%expr match [%e field_access] with None -> () | Some _ -> [%e build_pp_expr e]]
+        | None -> build_pp_expr e
       end
     | Repeat (range, e) ->
       let min_reps, max_reps_opt = range.txt in
@@ -736,7 +731,7 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
           [%expr
             let count = [%e eint ~loc min_reps] in
             for _ = 1 to count do
-              [%e build_pp_expr ~top_lvl:false e]
+              [%e build_pp_expr e]
             done]
         | _ ->
           let rec repeat_n n expr =
@@ -747,7 +742,7 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
                 [%e expr];
                 [%e repeat_n (n - 1) expr]]
           in
-          repeat_n min_reps (build_pp_expr ~top_lvl:false e)
+          repeat_n min_reps (build_pp_expr e)
       end
     | _ -> [%expr ()]
   (* determine branch based on populated fields *)
@@ -778,7 +773,7 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
               | [ cond ] -> cond
               | conds -> List.fold_left (fun acc cond -> [%expr [%e acc] || [%e cond]]) (List.hd conds) (List.tl conds) )
           in
-          condition, build_pp_expr ~top_lvl:false branch)
+          condition, build_pp_expr branch)
         branches
     in
 
@@ -791,7 +786,7 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
     build_cascade branch_conditions
   in
 
-  let pp_body = build_pp_expr ~top_lvl:true r in
+  let pp_body = build_pp_expr r in
 
   [
     pstr_type ~loc rec_flag [ type_decl ];

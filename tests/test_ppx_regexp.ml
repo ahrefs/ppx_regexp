@@ -662,6 +662,47 @@ let test_parse_http_request _ =
     assert_bool "Should have POST" (String.starts_with ~prefix:"POST" output);
     assert_bool "Should not have query" (not (String.contains output '?'))
 
+(* top-level alternation *)
+type ip_address =
+  {%mikmatch|
+  (digit{1-3} as o1 : int) '.'
+  (digit{1-3} as o2 : int) '.'
+  (digit{1-3} as o3 : int) '.'
+  (digit{1-3} as o4 : int)
+
+  |
+
+  ((['0'-'9' 'a'-'f' 'A'-'F']{0-4} ':')+ ['0'-'9' 'a'-'f' 'A'-'F']{0-4} as ipv6)
+|}
+
+let test_parse_ip1 _ =
+  let ip1 = "192.168.1.1" in
+  match parse_ip_address ip1 with
+  | None -> assert_failure "Should parse ipv4"
+  | Some t ->
+    assert_equal t.o1 (Some 192);
+    assert_equal t.o2 (Some 168);
+    assert_equal t.o3 (Some 1);
+    assert_equal t.o4 (Some 1);
+    assert_equal t.ipv6 None;
+    assert_equal (Format.asprintf "%a" pp_ip_address t) ip1;
+    let t' = { o1 = None; o2 = None; o3 = None; o4 = None; ipv6 = Some "2001:db8::8a2e:370:7334" } in
+    assert_equal (Format.asprintf "%a" pp_ip_address t') "2001:db8::8a2e:370:7334"
+
+let test_parse_ip2 _ =
+  let ip2 = "2001:db8::8a2e:370:7334" in
+  match parse_ip_address ip2 with
+  | None -> assert_failure "Should parse ipv6"
+  | Some t ->
+    assert_equal t.o1 None;
+    assert_equal t.o2 None;
+    assert_equal t.o3 None;
+    assert_equal t.o4 None;
+    assert_equal t.ipv6 (Some "2001:db8::8a2e:370:7334");
+    assert_equal (Format.asprintf "%a" pp_ip_address t) ip2;
+    let t' = { o1 = Some 127; o2 = Some 0; o3 = Some 0; o4 = Some 1; ipv6 = None } in
+    assert_equal (Format.asprintf "%a" pp_ip_address t') "127.0.0.1"
+
 let suite =
   "mikmatch_tests"
   >::: [
@@ -688,6 +729,8 @@ let suite =
          "test_parse_with_neither" >:: test_parse_with_neither;
          "test_parse_url" >:: test_parse_url;
          "test_parse_http_request" >:: test_parse_http_request;
+         "test_parse_ip1" >:: test_parse_ip1;
+         "test_parse_ip2" >:: test_parse_ip2;
        ]
 
 let () = run_test_tt_main suite
