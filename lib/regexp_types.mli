@@ -22,6 +22,7 @@ and 'a node =
 and conv_ty =
   | Int
   | Float
+  | Typ of Longident.t
   | Func of (Longident.t * Longident.t option) (* function name * type *)
   | Pipe_all_func of Longident.t
 

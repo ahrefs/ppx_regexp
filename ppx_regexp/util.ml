@@ -44,10 +44,20 @@ let extract_qualified_name n =
     in
     build_longident (List.rev module_path)
 
+let mk_qualified_fun ~loc ~prefix ?(suffix = "") lid =
+  let parse_t =
+    match lid with
+    | Longident.Lident name -> Longident.Lident (prefix ^ name ^ suffix)
+    | Longident.Ldot (path, name) -> Longident.Ldot (path, prefix ^ name ^ suffix)
+    | Longident.Lapply _ as x -> x
+  in
+  pexp_ident ~loc { txt = parse_t; loc }
+
 let pp_conv = function
   | None -> "NONE"
   | Some Regexp_types.Int -> "INT"
   | Some Regexp_types.Float -> "FLOAT"
+  | Some (Regexp_types.Typ t) -> Longident.name t
   | Some (Regexp_types.Func (func_name, _)) -> Format.sprintf "FUNC_NAME: %s." (Longident.name func_name)
   | Some (Regexp_types.Pipe_all_func func_name) -> Format.sprintf "PIPE_FUNC_NAME: %s" (Longident.name func_name)
 

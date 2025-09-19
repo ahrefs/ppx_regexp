@@ -38,6 +38,9 @@ module Bindings = struct
       | None -> eG
       | Some Regexp_types.Int -> [%expr int_of_string [%e eG]]
       | Some Float -> [%expr float_of_string [%e eG]]
+      | Some (Typ t) ->
+        let parse_fun = Util.mk_qualified_fun ~prefix:"parse_" ~loc t in
+        [%expr [%e parse_fun] [%e eG]]
       | Some (Func (func_name, _)) ->
         let func_ident = pexp_ident ~loc { txt = func_name; loc } in
         [%expr [%e func_ident] [%e eG]]
@@ -86,7 +89,9 @@ module Regexp = struct
           nG', ((res, None, Some (Pipe_all_func func), must_match) :: inner_bs) @ bs
       | Call _ -> fun (nG, bs) -> nG + 1, bs
     in
-    function { Location.txt = Capture_as (idr, conv, e); _ } -> recurse true e (0, [ idr, None, conv, true ]) | e -> recurse true e (0, [])
+    function
+    | { Location.txt = Capture_as (idr, conv, e); _ } -> recurse true e (1, [ idr, Some 0, conv, true ])
+    | e -> recurse true e (0, [])
 
   let to_re_expr ~in_let =
     let rec recurse (e' : _ Location.loc) =
@@ -110,7 +115,11 @@ module Regexp = struct
         let ld = { txt = lid.txt; loc = lid.loc } in
         if in_let then pexp_ident ~loc:lid.loc ld else [%expr Re.group [%e pexp_ident ~loc:lid.loc ld]]
     in
-    function { Location.txt = Capture_as (_, _, e); _ } -> recurse e | e -> recurse e
+    function
+    | { Location.txt = Capture_as (_, _, e); _ } ->
+      let loc = e.Location.loc in
+      [%expr Re.group [%e recurse e]]
+    | e -> recurse e
 
   let rec squash_codes (e : _ Location.loc) : _ Location.loc =
     let open Location in
@@ -311,6 +320,9 @@ let transform_destructuring_let ~mode ~loc pattern_str expr =
       | None -> expr
       | Some Regexp_types.Int -> [%expr int_of_string [%e expr]]
       | Some Float -> [%expr float_of_string [%e expr]]
+      | Some (Typ t) ->
+        let parse_fun = Util.mk_qualified_fun ~prefix:"parse_" ~loc t in
+        [%expr [%e parse_fun] [%e expr]]
       | Some (Func (func_name, _)) ->
         let func_ident = pexp_ident ~loc { txt = func_name; loc } in
         [%expr [%e func_ident] [%e expr]]
@@ -580,6 +592,7 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
               | None -> [%type: string]
               | Some Regexp_types.Int -> [%type: int]
               | Some Float -> [%type: float]
+              | Some (Typ t) -> ptyp_constr ~loc { txt = t; loc } []
               | Some (Func (_, Some typ)) -> ptyp_constr ~loc { txt = typ; loc } []
               | Some (Func (_, None)) -> [%type: string]
               | Some (Pipe_all_func _) -> Util.error ~loc ">>> not allowed in type definitions"
@@ -603,6 +616,7 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
   in
 
   let parse_func_name = "parse_" ^ type_name in
+  let parse_exn_func_name = "parse_" ^ type_name ^ "_exn" in
   let re_var = Util.fresh_var () in
 
   let build_record =
@@ -616,6 +630,9 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
             | None -> group_expr
             | Some Regexp_types.Int -> [%expr int_of_string [%e group_expr]]
             | Some Float -> [%expr float_of_string [%e group_expr]]
+            | Some (Typ t) ->
+              let parse_fun = Util.mk_qualified_fun ~loc ~prefix:"parse_" ~suffix:"_exn" t in
+              [%expr [%e parse_fun] [%e group_expr]]
             | Some (Func (func_name, _)) ->
               let func = pexp_ident ~loc { txt = func_name; loc } in
               [%expr [%e func] [%e group_expr]]
@@ -669,6 +686,9 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
             [%expr [%e pexp_ident ~loc { txt = Lident pp_name; loc }] ppf]
           | Some Regexp_types.Int -> [%expr Format.fprintf ppf "%d"]
           | Some Float -> [%expr Format.fprintf ppf "%g"]
+          | Some (Typ t) ->
+            let pp_fun = Util.mk_qualified_fun ~loc ~prefix:"pp_" t in
+            [%expr Format.fprintf ppf "%a" [%e pp_fun]]
           | _ -> [%expr Format.pp_print_string ppf]
         in
         if must then [%expr [%e base] [%e field_access]] else [%expr match [%e field_access] with None -> () | Some x -> [%e base] x]
@@ -753,20 +773,46 @@ let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
 
   let pp_body = build_pp_expr r in
 
+  (* [ *)
+  (*   pstr_type ~loc rec_flag [ type_decl ]; *)
+  (*   pstr_value ~loc Nonrecursive [ parse_binding ]; *)
+  (*   pstr_value ~loc Nonrecursive *)
+  (*     [ *)
+  (*       value_binding ~loc *)
+  (*         ~pat:(ppat_var ~loc { txt = parse_func_name; loc }) *)
+  (*         ~expr: *)
+  (*           [%expr *)
+  (*             fun s -> *)
+  (*               match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with *)
+  (*               | None -> None *)
+  (*               | Some _g -> Some [%e build_record]]; *)
+  (*     ]; *)
+  (*   pstr_value ~loc Nonrecursive *)
+  (*     [ *)
+  (*       value_binding ~loc *)
+  (*         ~pat:(ppat_var ~loc { txt = parse_exn_func_name; loc }) *)
+  (*         ~expr: *)
+  (*           [%expr *)
+  (*             fun s -> *)
+  (*               match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with *)
+  (*               | None -> failwith "" *)
+  (*               | Some _g -> [%e build_record]]; *)
+  (*     ]; *)
+  (*   pstr_value ~loc Nonrecursive *)
+  (*     [ value_binding ~loc ~pat:(ppat_var ~loc { txt = pp_func_name; loc }) ~expr:[%expr fun ppf v -> [%e pp_body]] ]; *)
+  (* ] *)
   [
     pstr_type ~loc rec_flag [ type_decl ];
     pstr_value ~loc Nonrecursive [ parse_binding ];
-    pstr_value ~loc Nonrecursive
-      [
-        value_binding ~loc
-          ~pat:(ppat_var ~loc { txt = parse_func_name; loc })
-          ~expr:
-            [%expr
-              fun s ->
-                match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with
-                | None -> None
-                | Some _g -> Some [%e build_record]];
-      ];
-    pstr_value ~loc Nonrecursive
-      [ value_binding ~loc ~pat:(ppat_var ~loc { txt = pp_func_name; loc }) ~expr:[%expr fun ppf v -> [%e pp_body]] ];
+    [%stri
+      let[@warning "-32"] [%p ppat_var ~loc { txt = parse_func_name; loc }] =
+       fun s ->
+        match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with None -> None | Some _g -> Some [%e build_record]];
+    [%stri
+      let[@warning "-32"] [%p ppat_var ~loc { txt = parse_exn_func_name; loc }] =
+       fun s ->
+        match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with
+        | None -> failwith ""
+        | Some _g -> [%e build_record]];
+    [%stri let[@warning "-32"] [%p ppat_var ~loc { txt = pp_func_name; loc }] = fun ppf v -> [%e pp_body]];
   ]

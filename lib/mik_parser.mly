@@ -214,6 +214,52 @@ basic_atom:
       wrap_loc $startpos $endpos (Capture_as (name_loc, None, call_node))
     }
 
+  (* Simple captures with type conversion + function app *)
+  | LPAREN id = IDENT COLON INT_CONVERTER RPAREN
+  | LPAREN id = MOD_IDENT COLON INT_CONVERTER RPAREN {
+      (* (digits : int) -> captures 'digits' pattern as 'digits' converted to int *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(id) $endpos(id) id in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some Int, call_node))
+    }
+  | LPAREN id = IDENT COLON FLOAT_CONVERTER RPAREN
+  | LPAREN id = MOD_IDENT COLON FLOAT_CONVERTER RPAREN {
+      (* (number : float) -> captures 'number' pattern as 'number' converted to float *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(id) $endpos(id) id in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some Float, call_node))
+    }
+  | LPAREN id = IDENT COLON typ = ident RPAREN
+  | LPAREN id = MOD_IDENT COLON typ = ident RPAREN {
+      (* (text : typ) -> captures 'text' pattern converted to 'typ' given that there is a parse_<typ> function in scope *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(id) $endpos(id) id in
+      let typ = string_to_longident typ in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Typ typ), call_node))
+    }
+  | LPAREN id = IDENT COLON EQUAL func = ident RPAREN
+  | LPAREN id = MOD_IDENT COLON EQUAL func = ident RPAREN {
+      (* (text := process) -> captures 'text' pattern as 'text' processed by function *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(id) $endpos(id) id in
+      let func = string_to_longident func in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, None)), call_node))
+    }
+  | LPAREN id = IDENT COLON EQUAL func = ident COLON typ = ident RPAREN
+  | LPAREN id = MOD_IDENT COLON EQUAL func = ident COLON typ = ident RPAREN {
+      (* (text := process : typ) -> captures 'text' pattern as 'text' processed by function, with result as type 'typ' *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(id) $endpos(id) id in
+      let func = string_to_longident func in
+      let typ = string_to_longident typ in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Func (func, Some typ)), call_node))
+    }
+
   (* Simple named captures *)
   | LPAREN IDENT AS RPAREN | LPAREN MOD_IDENT AS RPAREN { missing_error "name after 'as'" $startpos($3) $endpos($4) }
   | LPAREN id = IDENT AS name = IDENT RPAREN
@@ -248,6 +294,15 @@ basic_atom:
       let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some Float, call_node))
+    }
+  | LPAREN id = IDENT AS name = IDENT COLON typ = ident RPAREN
+  | LPAREN id = MOD_IDENT AS name = IDENT COLON typ = ident RPAREN {
+      (* (text : typ) -> captures 'text' pattern converted to 'typ' given that there is a parse_<typ> function in scope *)
+      let call_loc = wrap_loc $startpos(id) $endpos(id) (string_to_longident id) in
+      let call_node = wrap_loc $startpos(id) $endpos(id) (Call call_loc) in
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      let typ = string_to_longident typ in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Typ typ), call_node))
     }
   | LPAREN id = IDENT AS name = IDENT COLON EQUAL func = ident RPAREN
   | LPAREN id = MOD_IDENT AS name = IDENT COLON EQUAL func = ident RPAREN {
