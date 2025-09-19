@@ -183,7 +183,9 @@ The pretty-printer detects which alternation branch to use based on field popula
 ##### Type conversions and custom parsers
 - For function application you are required to pass the return type.
 - If the return type is itself an application (e.g. `string list`), then you must provide a type alias.  
-- The type must have an associated `pp` function. (Notice, in the example, the `mode` type and its associated functions)
+- For function application with `:=`, the type must have an associated `pp` function. (Notice, in the example, the `mode` type and its associated functions)
+- If the type is provided without a conversion function, then it is assumed that in the scope there are associated `parse` and `pp` functions.
+  This guarantees compositionality with other types defined with this extension
 
 ### Example
 

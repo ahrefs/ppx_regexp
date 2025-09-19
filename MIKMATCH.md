@@ -105,14 +105,17 @@ let do_something = function%mikmatch
 ```
 
 #### Type conversion
-It is possible to convert variables to `int` of `float` on the fly:
+It is possible to convert variables to `int`, `float`, or some other type (given there is a `parse` function for it in scope) on the fly:
 
 ```ocaml
 let%mikmatch num = {| digit+ |}
 
+let parse_custom_typ t = ...
+
 let do_something = function%mikmatch
   | {|/ 'd' (num as n : int) ... /|} when n = 123 -> ... (* (n : int) available here *)
   | {|/ 'f' (num as n : float) ... /|} -> ... (* (n : float) available here *)
+  | {|/ "other" (any+ as c : custom_typ) ... /|} -> ... (* (c : custom_typ) available here *)
   | _ -> ...
 ```
 
