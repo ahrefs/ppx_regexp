@@ -386,6 +386,11 @@ basic_atom:
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       wrap_loc $startpos $endpos (Capture_as (name_loc, Some Float, $2))
     }
+  | LPAREN pattern AS name = IDENT COLON typ = ident RPAREN {
+      let name_loc = wrap_loc $startpos(name) $endpos(name) name in
+      let typ = string_to_longident typ in
+      wrap_loc $startpos $endpos (Capture_as (name_loc, Some (Typ typ), $2))
+    }
   | LPAREN pattern AS name = IDENT COLON EQUAL func = ident RPAREN {
       let name_loc = wrap_loc $startpos(name) $endpos(name) name in
       let func = string_to_longident func in

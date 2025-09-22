@@ -46,9 +46,9 @@ let transformation =
 
         if not needs_transformation then super#structure_item item acc
         else (
-          let all_items =
+          let all_items, all_bindings =
             List.fold_left
-              (fun items_acc td ->
+              (fun (items_acc, bindings_acc) td ->
                 match td.ptype_manifest with
                 (* type ... = {%mikmatch| ... |} *)
                 | Some
@@ -63,15 +63,15 @@ let transformation =
                     } ->
                   let mode = if ext = "pcre" then `Pcre else `Mik in
                   let type_name = td.ptype_name.txt in
-                  let bindings = Transformations.transform_type ~mode ~loc rec_flag type_name pattern_str td in
-                  items_acc @ bindings
-                | _ -> items_acc)
-              [] type_decls
+                  let items, binding = Transformations.transform_type ~mode ~loc rec_flag type_name pattern_str td in
+                  let alias = pstr_value ~loc Nonrecursive [ make_alias_binding ~loc ~var_name:type_name ] in
+                  (alias :: items_acc) @ items, binding :: bindings_acc
+                | _ -> items_acc, bindings_acc)
+              ([], acc) type_decls
           in
 
           let wrapped = pstr_include ~loc:item.pstr_loc (include_infos ~loc:item.pstr_loc (pmod_structure ~loc:item.pstr_loc all_items)) in
-
-          wrapped, acc)
+          wrapped, all_bindings)
       (* let%mik/%pcre x = {|some regex|}*)
       | Pstr_extension (({ txt = ("pcre" | "mikmatch") as ext; _ }, PStr [ { pstr_desc = Pstr_value (rec_flag, vbs); _ } ]), _) ->
         let mode = if ext = "pcre" then `Pcre else `Mik in
@@ -195,7 +195,7 @@ let impl str =
       rev_bindings
       |> List.rev
       |> List.fold_left
-           (fun acc binding -> acc @ [%str let [%p binding.pvb_pat] = [%e binding.pvb_expr]])
+           (fun acc binding -> acc @ [%str let[@warning "-32"] [%p binding.pvb_pat] = [%e binding.pvb_expr]])
            [%str [%%i pstr_value ~loc Nonrecursive [ dispatch_function_binding ~loc ]]]
     in
     let mod_expr = pmod_structure ~loc struct_items in

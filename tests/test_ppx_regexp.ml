@@ -340,13 +340,15 @@ let test_character_sets _ =
   assert_equal "has digits" (match_not_digit "abc123")
 
 (* Test complex patterns with multiple features *)
+(* username imported from other file *)
 
-let%mikmatch username = {| alnum+ ('.' alnum+)* |}
 let%mikmatch domain = {| alnum+ ('.' alnum+)+ |}
 let%mikmatch octet = {| digit{1-3} |}
 
 let test_complex_patterns _ =
-  let parse_email = function%mikmatch {|/ (username as user) '@' (domain as dom) /|} -> Some (user, dom) | _ -> None in
+  let parse_email =
+    function%mikmatch {|/ (Test_ppx_regexp_module.username as user) '@' (domain as dom) /|} -> Some (user, dom) | _ -> None
+  in
 
   begin
     match parse_email "john.doe@example.com" with
@@ -517,7 +519,7 @@ let test_mixed_matching _ =
 
   assert_equal "got a" (no_default_case "a");
   assert_equal "got b" (no_default_case "b");
-  assert_raises (Failure "File tests/test_ppx_regexp.ml, lines 512-514, characters 24-33: String did not match any regex.") (fun () ->
+  assert_raises (Failure "File tests/test_ppx_regexp.ml, lines 514-516, characters 24-33: String did not match any regex.") (fun () ->
     no_default_case "c")
 
 type mode =
@@ -700,6 +702,60 @@ let test_parse_ip2 _ =
     let t' = { o1 = Some 127; o2 = Some 0; o3 = Some 0; o4 = Some 1; ipv6 = None } in
     assert_equal (Format.asprintf "%a" pp_ip_address t') "127.0.0.1"
 
+(* testing type compositionality *)
+
+type timestamp =
+  {%mikmatch|
+  (digit{4} '-' digit{2} '-' digit{2} as ymd)
+  ' '
+  (digit{2} ':' digit{2} ':' digit{2} '.' digit{3} as hmsms)
+|}
+
+type alog =
+  {%mikmatch|
+  '[' (timestamp) ']'
+  ' '+
+  (digit+ as pid : int)
+  ':'
+  (digit+ as tid : int)?
+  ' '
+  '[' ([^':']+ as facility) ':' (Test_ppx_regexp_module.level : Test_ppx_regexp_module.level) ']'
+  ' '
+  (
+    ([^ ':']+ as msg_part) (": exn " ([^ '[']* as exception_info))?
+    |
+    ([^ '[']* as message)
+  )
+|}
+
+type alog_list = alog list
+
+let parse_alog_list_exn logs : alog_list =
+  logs |> String.split_on_char '\n' |> List.filter (fun s -> String.trim s <> "") |> List.map parse_alog_exn
+
+let pp_alog_list fmt alogs = Format.pp_print_list pp_alog fmt alogs
+
+type logfile = {%mikmatch|
+  ((alog | space)+ as logs : alog_list)
+|}
+
+let test_parse_logfile _ =
+  let logfile =
+    {|
+[2024-03-15 14:23:45.123] 12345: [http:debug] received 2048 bytes
+[2024-03-15 14:23:45.456] 8901: [http:info] sent 1024 bytes
+[2024-03-15 14:23:45.789] 12345:12346 [http:debug] processing request
+[2024-03-15 14:23:45.789] 8901: [http:warn] failed here : exn Not_found
+[2025-01-15 14:30:00.000] 3000: [main:info] server starting up
+[2025-01-15 14:30:00.100] 3000:1298 [config:debug] loading configuration from /etc/app/config.yaml
+[2025-01-15 14:30:00.200] 3000: [db:info] establishing database connection pool (size=10)
+[2025-01-15 11:00:00.500] 8901: [parser:error] invalid JSON : exn Failure("unexpected character at position 42")
+|}
+  in
+  match parse_logfile logfile with
+  | None -> assert_failure "Should parse logfile"
+  | Some t -> assert_equal (Format.asprintf "%a" pp_logfile t) (String.trim logfile)
+
 let suite =
   "mikmatch_tests"
   >::: [
@@ -728,6 +784,7 @@ let suite =
          "test_parse_http_request" >:: test_parse_http_request;
          "test_parse_ip1" >:: test_parse_ip1;
          "test_parse_ip2" >:: test_parse_ip2;
+         "test_parse_logfile" >:: test_parse_logfile;
        ]
 
 let () = run_test_tt_main suite

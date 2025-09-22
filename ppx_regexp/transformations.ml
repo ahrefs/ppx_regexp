@@ -93,7 +93,7 @@ module Regexp = struct
     | { Location.txt = Capture_as (idr, conv, e); _ } -> recurse true e (1, [ idr, Some 0, conv, true ])
     | e -> recurse true e (0, [])
 
-  let to_re_expr ~in_let =
+  let to_re_expr ?(group = true) ~in_let =
     let rec recurse (e' : _ Location.loc) =
       let loc = e'.Location.loc in
       match e'.Location.txt with
@@ -108,17 +108,17 @@ module Regexp = struct
       | Nongreedy e -> [%expr Re.non_greedy [%e recurse e]]
       | Caseless e -> [%expr Re.no_case [%e recurse e]]
       | Capture _ -> Util.error ~loc "Unnamed capture is not allowed for %%pcre and %%mikmatch."
-      | Capture_as (_, _, e) -> [%expr Re.group [%e recurse e]]
+      | Capture_as (_, _, e) -> if group then [%expr Re.group [%e recurse e]] else recurse e
       | Pipe_all (_, _, e) -> recurse e
       | Call lid ->
         (* Use the Call node's own location, not the parent's location *)
         let ld = { txt = lid.txt; loc = lid.loc } in
-        if in_let then pexp_ident ~loc:lid.loc ld else [%expr Re.group [%e pexp_ident ~loc:lid.loc ld]]
+        if in_let || not group then pexp_ident ~loc:lid.loc ld else [%expr Re.group [%e pexp_ident ~loc:lid.loc ld]]
     in
     function
     | { Location.txt = Capture_as (_, _, e); _ } ->
       let loc = e.Location.loc in
-      [%expr Re.group [%e recurse e]]
+      if group then [%expr Re.group [%e recurse e]] else recurse e
     | e -> recurse e
 
   let rec squash_codes (e : _ Location.loc) : _ Location.loc =
@@ -579,240 +579,221 @@ let transform_mixed_match ~loc ?matched_expr cases acc =
 let transform_type ~mode ~loc rec_flag type_name pattern_str _td =
   let pos = Parser.calculate_pattern_pos ~loc ~pattern_str in
   let parser = Parser.get_parser ~mode ~target:`Let ~pos in
-  let r, re, bs, _nG, flags = Parser.run ~parser ~target:`Let ~pos pattern_str in
-
-  let fields =
-    List.map
-      (fun (name, idx, conv, must) ->
-        if name.txt = "_" then None
-        else (
-          let field_type =
-            let base_type =
-              match conv with
-              | None -> [%type: string]
-              | Some Regexp_types.Int -> [%type: int]
-              | Some Float -> [%type: float]
-              | Some (Typ t) -> ptyp_constr ~loc { txt = t; loc } []
-              | Some (Func (_, Some typ)) -> ptyp_constr ~loc { txt = typ; loc } []
-              | Some (Func (_, None)) -> [%type: string]
-              | Some (Pipe_all_func _) -> Util.error ~loc ">>> not allowed in type definitions"
+  let r, re, bs, nG, flags = Parser.run ~parser ~target:`Let ~pos pattern_str in
+  let re_no_groups = Regexp.to_re_expr ~group:false ~in_let:false r in
+  if nG = 0 then Util.error ~loc "You must have at least one capture to create a valid record."
+  else begin
+    let fields =
+      List.map
+        (fun (name, idx, conv, must) ->
+          if name.txt = "_" then None
+          else (
+            let field_type =
+              let base_type =
+                match conv with
+                | None -> [%type: string]
+                | Some Regexp_types.Int -> [%type: int]
+                | Some Float -> [%type: float]
+                | Some (Typ t) -> ptyp_constr ~loc { txt = t; loc } []
+                | Some (Func (_, Some typ)) -> ptyp_constr ~loc { txt = typ; loc } []
+                | Some (Func (_, None)) -> [%type: string]
+                | Some (Pipe_all_func _) -> Util.error ~loc ">>> not allowed in type definitions"
+              in
+              if must then base_type else [%type: [%t base_type] option]
             in
-            if must then base_type else [%type: [%t base_type] option]
-          in
-          Some (name, idx, field_type, conv, must)))
-      (List.rev bs)
-    |> List.filter_map (fun x -> x)
-  in
+            Some (name, idx, field_type, conv, must)))
+        (List.rev bs)
+      |> List.filter_map (fun x -> x)
+    in
 
-  let record_fields =
-    List.map
-      (fun (name, _, typ, _, _) -> label_declaration ~loc ~name:{ txt = name.txt; loc = name.loc } ~mutable_:Immutable ~type_:typ)
-      fields
-  in
-
-  let type_decl =
-    type_declaration ~loc ~name:{ txt = type_name; loc } ~params:[] ~cstrs:[] ~kind:(Ptype_record record_fields) ~private_:Public
-      ~manifest:None
-  in
-
-  let parse_func_name = "parse_" ^ type_name in
-  let parse_exn_func_name = "parse_" ^ type_name ^ "_exn" in
-  let re_var = Util.fresh_var () in
-
-  let build_record =
-    let field_exprs =
-      List.mapi
-        (fun i (name, _, _, conv, must) ->
-          let group_idx = i + 1 in
-          let group_expr = [%expr Re.Group.get _g [%e eint ~loc group_idx]] in
-          let converted =
-            match conv with
-            | None -> group_expr
-            | Some Regexp_types.Int -> [%expr int_of_string [%e group_expr]]
-            | Some Float -> [%expr float_of_string [%e group_expr]]
-            | Some (Typ t) ->
-              let parse_fun = Util.mk_qualified_fun ~loc ~prefix:"parse_" ~suffix:"_exn" t in
-              [%expr [%e parse_fun] [%e group_expr]]
-            | Some (Func (func_name, _)) ->
-              let func = pexp_ident ~loc { txt = func_name; loc } in
-              [%expr [%e func] [%e group_expr]]
-            | _ -> group_expr
-          in
-          let value = if must then converted else [%expr try Some [%e converted] with Not_found -> None] in
-          { txt = Lident name.txt; loc }, value)
+    let record_fields =
+      List.map
+        (fun (name, _, typ, _, _) -> label_declaration ~loc ~name:{ txt = name.txt; loc = name.loc } ~mutable_:Immutable ~type_:typ)
         fields
     in
-    pexp_record ~loc field_exprs None
-  in
 
-  let parse_binding = Re_comp.compile ~loc re_var [ re, flags ] in
-
-  let unescape_literal s =
-    let rec unescape acc i =
-      if i >= String.length s then String.concat "" (List.rev acc)
-      else if i + 1 < String.length s && s.[i] = '\\' then (
-        match s.[i + 1] with
-        | ('[' | ']' | '(' | ')' | '{' | '}' | '.' | '*' | '+' | '?' | '|' | '^' | '$') as c -> unescape (String.make 1 c :: acc) (i + 2)
-        | _ -> unescape (String.sub s i 1 :: acc) (i + 1))
-      else unescape (String.sub s i 1 :: acc) (i + 1)
+    let type_decl =
+      type_declaration ~loc ~name:{ txt = type_name; loc } ~params:[] ~cstrs:[] ~kind:(Ptype_record record_fields) ~private_:Public
+        ~manifest:None
     in
-    unescape [] 0
-  in
 
-  let pp_func_name = "pp_" ^ type_name in
+    let parse_func_name = "parse_" ^ type_name in
+    let parse_exn_func_name = "parse_" ^ type_name ^ "_exn" in
+    let re_var = Util.fresh_var () in
 
-  let rec build_pp_expr (node : _ Location.loc) =
-    match node.txt with
-    | Regexp_types.Code s -> [%expr Format.pp_print_string ppf [%e estring ~loc @@ unescape_literal s]]
-    | Seq es ->
-      let exprs = List.map build_pp_expr es in
-      List.fold_left
-        (fun acc e ->
-          [%expr
-            [%e acc];
-            [%e e]])
-        [%expr ()] exprs
-    | Alt branches ->
-      (* branch selection based on populated fields *)
-      build_alt_pp_expr branches
-    | Capture_as (name, conv, _) when name.txt <> "_" ->
-      let field_access = pexp_field ~loc [%expr v] { txt = Lident name.txt; loc } in
-      let must = List.exists (fun (n, _, _, _, m) -> n.txt = name.txt && m) fields in
-      let print_expr =
-        let base =
-          match conv with
-          | Some (Func (_func_name, Some typ)) ->
-            let pp_name = match typ with Lident n -> "pp_" ^ n | _ -> "pp_custom" in
-            [%expr [%e pexp_ident ~loc { txt = Lident pp_name; loc }] ppf]
-          | Some Regexp_types.Int -> [%expr Format.fprintf ppf "%d"]
-          | Some Float -> [%expr Format.fprintf ppf "%g"]
-          | Some (Typ t) ->
-            let pp_fun = Util.mk_qualified_fun ~loc ~prefix:"pp_" t in
-            [%expr Format.fprintf ppf "%a" [%e pp_fun]]
-          | _ -> [%expr Format.pp_print_string ppf]
+    let build_record =
+      let field_exprs =
+        List.mapi
+          (fun i (name, _, _, conv, must) ->
+            let group_idx = i + 1 in
+            let group_expr = [%expr Re.Group.get _g [%e eint ~loc group_idx]] in
+            let converted =
+              match conv with
+              | None -> group_expr
+              | Some Regexp_types.Int -> [%expr int_of_string [%e group_expr]]
+              | Some Float -> [%expr float_of_string [%e group_expr]]
+              | Some (Typ t) ->
+                let parse_fun = Util.mk_qualified_fun ~loc ~prefix:"parse_" ~suffix:"_exn" t in
+                [%expr [%e parse_fun] [%e group_expr]]
+              | Some (Func (func_name, _)) ->
+                let func = pexp_ident ~loc { txt = func_name; loc } in
+                [%expr [%e func] [%e group_expr]]
+              | _ -> group_expr
+            in
+            let value = if must then converted else [%expr try Some [%e converted] with Not_found -> None] in
+            { txt = Lident name.txt; loc }, value)
+          fields
+      in
+      pexp_record ~loc field_exprs None
+    in
+
+    let parse_binding = Re_comp.compile ~loc re_var [ re, flags ] in
+
+    let unescape_literal s =
+      let rec unescape acc i =
+        if i >= String.length s then String.concat "" (List.rev acc)
+        else if i + 1 < String.length s && s.[i] = '\\' then (
+          match s.[i + 1] with
+          | ('[' | ']' | '(' | ')' | '{' | '}' | '.' | '*' | '+' | '?' | '|' | '^' | '$') as c -> unescape (String.make 1 c :: acc) (i + 2)
+          | _ -> unescape (String.sub s i 1 :: acc) (i + 1))
+        else unescape (String.sub s i 1 :: acc) (i + 1)
+      in
+      unescape [] 0
+    in
+
+    let pp_func_name = "pp_" ^ type_name in
+
+    let rec build_pp_expr (node : _ Location.loc) =
+      match node.txt with
+      | Regexp_types.Code s -> [%expr Format.pp_print_string ppf [%e estring ~loc @@ unescape_literal s]]
+      | Seq es ->
+        let exprs = List.map build_pp_expr es in
+        List.fold_left
+          (fun acc e ->
+            [%expr
+              [%e acc];
+              [%e e]])
+          [%expr ()] exprs
+      | Alt branches ->
+        (* branch selection based on populated fields *)
+        build_alt_pp_expr branches
+      | Capture_as (name, conv, _) when name.txt <> "_" ->
+        let field_access = pexp_field ~loc [%expr v] { txt = Lident name.txt; loc } in
+        let must = List.exists (fun (n, _, _, _, m) -> n.txt = name.txt && m) fields in
+        let print_expr =
+          let base =
+            match conv with
+            | Some (Func (_func_name, Some typ)) ->
+              let pp_name = match typ with Lident n -> "pp_" ^ n | _ -> "pp_custom" in
+              [%expr [%e pexp_ident ~loc { txt = Lident pp_name; loc }] ppf]
+            | Some Regexp_types.Int -> [%expr Format.fprintf ppf "%d"]
+            | Some Float -> [%expr Format.fprintf ppf "%g"]
+            | Some (Typ t) ->
+              let pp_fun = Util.mk_qualified_fun ~loc ~prefix:"pp_" t in
+              [%expr Format.fprintf ppf "%a" [%e pp_fun]]
+            | _ -> [%expr Format.pp_print_string ppf]
+          in
+          if must then [%expr [%e base] [%e field_access]] else [%expr match [%e field_access] with None -> () | Some x -> [%e base] x]
         in
-        if must then [%expr [%e base] [%e field_access]] else [%expr match [%e field_access] with None -> () | Some x -> [%e base] x]
+        print_expr
+      | Opt e ->
+        let rec find_capture = function
+          | { txt = Regexp_types.Capture_as (name, _, _); _ } -> Some name.txt
+          | { txt = Seq es; _ } -> List.find_map find_capture es
+          | _ -> None
+        in
+        begin
+          match find_capture e with
+          | Some name ->
+            let field_access = pexp_field ~loc [%expr v] { txt = Lident name; loc } in
+            [%expr match [%e field_access] with None -> () | Some _ -> [%e build_pp_expr e]]
+          | None -> build_pp_expr e
+        end
+      | Repeat (range, e) ->
+        let min_reps, max_reps_opt = range.txt in
+        begin
+          match max_reps_opt with
+          | Some max when min_reps <> max ->
+            (* try to determine actual count from context *)
+            [%expr
+              let count = [%e eint ~loc min_reps] in
+              for _ = 1 to count do
+                [%e build_pp_expr e]
+              done]
+          | _ ->
+            let rec repeat_n n expr =
+              if n <= 0 then [%expr ()]
+              else if n = 1 then expr
+              else
+                [%expr
+                  [%e expr];
+                  [%e repeat_n (n - 1) expr]]
+            in
+            repeat_n min_reps (build_pp_expr e)
+        end
+      | _ -> [%expr ()]
+    (* determine branch based on populated fields *)
+    and build_alt_pp_expr branches =
+      let rec get_captures = function
+        | { txt = Regexp_types.Capture_as (name, _, e); _ } -> name.txt :: get_captures e
+        | { txt = Seq es; _ } -> List.concat_map get_captures es
+        | { txt = Opt e; _ } -> get_captures e
+        | _ -> []
       in
-      print_expr
-    | Opt e ->
-      let rec find_capture = function
-        | { txt = Regexp_types.Capture_as (name, _, _); _ } -> Some name.txt
-        | { txt = Seq es; _ } -> List.find_map find_capture es
-        | _ -> None
-      in
-      begin
-        match find_capture e with
-        | Some name ->
-          let field_access = pexp_field ~loc [%expr v] { txt = Lident name; loc } in
-          [%expr match [%e field_access] with None -> () | Some _ -> [%e build_pp_expr e]]
-        | None -> build_pp_expr e
-      end
-    | Repeat (range, e) ->
-      let min_reps, max_reps_opt = range.txt in
-      begin
-        match max_reps_opt with
-        | Some max when min_reps <> max ->
-          (* try to determine actual count from context *)
-          [%expr
-            let count = [%e eint ~loc min_reps] in
-            for _ = 1 to count do
-              [%e build_pp_expr e]
-            done]
-        | _ ->
-          let rec repeat_n n expr =
-            if n <= 0 then [%expr ()]
-            else if n = 1 then expr
-            else
-              [%expr
-                [%e expr];
-                [%e repeat_n (n - 1) expr]]
-          in
-          repeat_n min_reps (build_pp_expr e)
-      end
-    | _ -> [%expr ()]
-  (* determine branch based on populated fields *)
-  and build_alt_pp_expr branches =
-    let rec get_captures = function
-      | { txt = Regexp_types.Capture_as (name, _, e); _ } -> name.txt :: get_captures e
-      | { txt = Seq es; _ } -> List.concat_map get_captures es
-      | { txt = Opt e; _ } -> get_captures e
-      | _ -> []
-    in
 
-    let branch_conditions =
-      List.map
-        (fun branch ->
-          let captures = get_captures branch in
-          let condition =
-            match captures with
-            | [] -> [%expr false]
-            | names ->
-              List.map
-                (fun name ->
-                  let field = pexp_field ~loc [%expr v] { txt = Lident name; loc } in
-                  let is_field_defined = List.exists (fun (n, _, _, _, _) -> n.txt = name) fields in
-                  if is_field_defined then [%expr match [%e field] with None -> false | Some _ -> true] else [%expr false])
-                names
-              |> ( function
+      let branch_conditions =
+        List.map
+          (fun branch ->
+            let captures = get_captures branch in
+            let condition =
+              match captures with
               | [] -> [%expr false]
-              | [ cond ] -> cond
-              | conds -> List.fold_left (fun acc cond -> [%expr [%e acc] || [%e cond]]) (List.hd conds) (List.tl conds) )
-          in
-          condition, build_pp_expr branch)
-        branches
+              | names ->
+                List.map
+                  (fun name ->
+                    let field = pexp_field ~loc [%expr v] { txt = Lident name; loc } in
+                    let is_field_defined = List.exists (fun (n, _, _, _, _) -> n.txt = name) fields in
+                    if is_field_defined then [%expr match [%e field] with None -> false | Some _ -> true] else [%expr false])
+                  names
+                |> ( function
+                | [] -> [%expr false]
+                | [ cond ] -> cond
+                | conds -> List.fold_left (fun acc cond -> [%expr [%e acc] || [%e cond]]) (List.hd conds) (List.tl conds) )
+            in
+            condition, build_pp_expr branch)
+          branches
+      in
+
+      let rec build_cascade = function
+        | [] -> [%expr ()]
+        | [ (_, expr) ] -> expr
+        | (cond, expr) :: rest -> [%expr if [%e cond] then [%e expr] else [%e build_cascade rest]]
+      in
+
+      build_cascade branch_conditions
     in
 
-    let rec build_cascade = function
-      | [] -> [%expr ()]
-      | [ (_, expr) ] -> expr
-      | (cond, expr) :: rest -> [%expr if [%e cond] then [%e expr] else [%e build_cascade rest]]
+    let pp_body = build_pp_expr r in
+
+    let re_binding = value_binding ~loc ~pat:(ppat_var ~loc { txt = type_name; loc }) ~expr:re_no_groups in
+
+    let default_rhs = make_default_rhs ~mode ~target:`Let ~loc [] in
+
+    let items =
+      [
+        pstr_type ~loc rec_flag [ type_decl ];
+        pstr_value ~loc Nonrecursive [ parse_binding ];
+        [%stri
+          let[@warning "-32"] [%p ppat_var ~loc { txt = parse_func_name; loc }] =
+           fun s ->
+            match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with
+            | None -> None
+            | Some _g -> Some [%e build_record]];
+        [%stri
+          let[@warning "-32"] [%p ppat_var ~loc { txt = parse_exn_func_name; loc }] =
+           fun s -> match [%e pexp_ident ~loc { txt = Lident parse_func_name; loc }] s with None -> [%e default_rhs] | Some t -> t];
+        [%stri let[@warning "-32"] [%p ppat_var ~loc { txt = pp_func_name; loc }] = fun ppf v -> [%e pp_body]];
+      ]
     in
-
-    build_cascade branch_conditions
-  in
-
-  let pp_body = build_pp_expr r in
-
-  (* [ *)
-  (*   pstr_type ~loc rec_flag [ type_decl ]; *)
-  (*   pstr_value ~loc Nonrecursive [ parse_binding ]; *)
-  (*   pstr_value ~loc Nonrecursive *)
-  (*     [ *)
-  (*       value_binding ~loc *)
-  (*         ~pat:(ppat_var ~loc { txt = parse_func_name; loc }) *)
-  (*         ~expr: *)
-  (*           [%expr *)
-  (*             fun s -> *)
-  (*               match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with *)
-  (*               | None -> None *)
-  (*               | Some _g -> Some [%e build_record]]; *)
-  (*     ]; *)
-  (*   pstr_value ~loc Nonrecursive *)
-  (*     [ *)
-  (*       value_binding ~loc *)
-  (*         ~pat:(ppat_var ~loc { txt = parse_exn_func_name; loc }) *)
-  (*         ~expr: *)
-  (*           [%expr *)
-  (*             fun s -> *)
-  (*               match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with *)
-  (*               | None -> failwith "" *)
-  (*               | Some _g -> [%e build_record]]; *)
-  (*     ]; *)
-  (*   pstr_value ~loc Nonrecursive *)
-  (*     [ value_binding ~loc ~pat:(ppat_var ~loc { txt = pp_func_name; loc }) ~expr:[%expr fun ppf v -> [%e pp_body]] ]; *)
-  (* ] *)
-  [
-    pstr_type ~loc rec_flag [ type_decl ];
-    pstr_value ~loc Nonrecursive [ parse_binding ];
-    [%stri
-      let[@warning "-32"] [%p ppat_var ~loc { txt = parse_func_name; loc }] =
-       fun s ->
-        match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with None -> None | Some _g -> Some [%e build_record]];
-    [%stri
-      let[@warning "-32"] [%p ppat_var ~loc { txt = parse_exn_func_name; loc }] =
-       fun s ->
-        match Re.exec_opt (fst [%e pexp_ident ~loc { txt = Lident re_var; loc }]) s with
-        | None -> failwith ""
-        | Some _g -> [%e build_record]];
-    [%stri let[@warning "-32"] [%p ppat_var ~loc { txt = pp_func_name; loc }] = fun ppf v -> [%e pp_body]];
-  ]
+    items, re_binding
+  end
